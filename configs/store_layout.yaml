@@ -1,0 +1,63 @@
+# Zone polygon definitions for CAVIAR Shopping Centre videos.
+# Frame size: 384 x 288 pixels.
+# Coordinates are [x, y] pixel pairs forming a closed polygon (foot-position test).
+#
+# To re-annotate: extract the first frame with the helper script in data/zones/,
+# then update the polygons below to match actual store regions.
+
+zones:
+  entrance:
+    # Bottom-centre strip — where people first enter the scene
+    polygon:
+      - [0,   220]
+      - [384, 220]
+      - [384, 288]
+      - [0,   288]
+
+  walkway:
+    # Central horizontal corridor
+    polygon:
+      - [0,   150]
+      - [384, 150]
+      - [384, 220]
+      - [0,   220]
+
+  shelves_left:
+    # Left-side product display area
+    polygon:
+      - [0,   60]
+      - [130, 60]
+      - [130, 150]
+      - [0,   150]
+
+  shelves_center:
+    # Central product display area
+    polygon:
+      - [130, 60]
+      - [260, 60]
+      - [260, 150]
+      - [130, 150]
+
+  shelves_right:
+    # Right-side product display area
+    polygon:
+      - [260, 60]
+      - [384, 60]
+      - [384, 150]
+      - [260, 150]
+
+  billing:
+    # Checkout / billing counter — upper-left region
+    polygon:
+      - [0,   0]
+      - [130, 0]
+      - [130, 60]
+      - [0,   60]
+
+  exit:
+    # Upper-right corner — scene exit region
+    polygon:
+      - [260, 0]
+      - [384, 0]
+      - [384, 60]
+      - [260, 60]

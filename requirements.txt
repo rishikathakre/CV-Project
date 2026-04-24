@@ -1,0 +1,8 @@
+ultralytics
+opencv-python
+deep-sort-realtime
+networkx
+streamlit
+numpy
+pandas
+pyyaml
