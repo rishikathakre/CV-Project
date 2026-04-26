@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(python tests/test_zone_graph.py)",
-      "Bash(python tests/test_features.py)"
+      "Bash(python tests/test_features.py)",
+      "Bash(xargs rm *)",
+      "WebSearch",
+      "WebFetch(domain:homepages.inf.ed.ac.uk)",
+      "WebFetch(domain:groups.inf.ed.ac.uk)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:visionlab.uncc.edu)",
+      "WebFetch(domain:svip-lab.github.io)",
+      "WebFetch(domain:www.merl.com)",
+      "WebFetch(domain:data.mendeley.com)",
+      "Bash(pip show *)",
+      "Bash(python -c \"import streamlit; print\\(streamlit.__version__\\)\")",
+      "Bash(conda run *)",
+      "Bash(conda env *)"
     ]
   }
 }

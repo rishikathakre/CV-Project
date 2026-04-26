@@ -20,11 +20,15 @@ from shared.data_types import BehaviorFeatures
 
 # Thresholds
 _HIGH_SCORE_THRESHOLD   = 0.7
-_MEDIUM_SCORE_THRESHOLD = 0.4
-_SHELF_DWELL_MEDIUM_S   = 30.0   # seconds
+_MEDIUM_SCORE_THRESHOLD = 0.5
+_SHELF_DWELL_MEDIUM_S   = 60.0   # seconds in a shelf zone before MEDIUM alert
 _HIGH_REVISIT_COUNT     = 3
 
-_SHELF_ZONES = {"shelves_left", "shelves_center", "shelves_right"}
+_SHELF_ZONES_CANONICAL = {"shelves_left", "shelves_center", "shelves_right"}
+
+
+def _is_shelf_zone(zone: str) -> bool:
+    return zone in _SHELF_ZONES_CANONICAL or zone.startswith("shelf") or zone.startswith("shelves")
 
 
 def generate_alert(features: BehaviorFeatures) -> BehaviorFeatures:
@@ -96,7 +100,7 @@ def _evaluate(features: BehaviorFeatures) -> Tuple[str, List[str]]:
         shelf_dwell_flags = [
             (z, t)
             for z, t in features.dwell_per_zone.items()
-            if z in _SHELF_ZONES and t > _SHELF_DWELL_MEDIUM_S
+            if _is_shelf_zone(z) and t > _SHELF_DWELL_MEDIUM_S
         ]
         if shelf_dwell_flags:
             level = "MEDIUM"

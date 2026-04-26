@@ -1,49 +1,70 @@
 """
-Adaptive suspicion scoring.
+Suspicion scoring.
 
-Computes a weighted suspicion score in [0.0, 1.0] from four normalised
-sub-features.  Weights are exposed as module-level constants so they can
-be tuned without touching the scoring logic.
+compute_score()  — stateless, fixed-threshold scorer (kept for backward compat / tests).
+AdaptiveScorer   — stateful scorer that calibrates normalization thresholds from the
+                   observed population instead of using hard-coded constants.
 
-Formula:
-    S = α*f1 + β*f2 + γ*f3 + δ*f4
-    f1 = dwell_anomaly       (long dwell in any single zone)
-    f2 = revisit_score       (normalised count of zone re-entries)
-    f3 = trajectory_irregularity  (from features.py)
-    f4 = billing_bypass      (binary: 0.0 or 1.0)
+Formula (shared by both):
+    S = α·f1 + β·f2 + γ·f3 + δ·f4
+    f1 = dwell_anomaly          (longest single-zone dwell, normalised)
+    f2 = revisit_score          (total zone re-entries, normalised)
+    f3 = trajectory_irregularity
+    f4 = billing_bypass         (binary)
 """
+
+import numpy as np
 
 from shared.data_types import BehaviorFeatures
 
 # ---------------------------------------------------------------------------
-# Tunable weights (α, β, γ, δ)
+# Shared weights (α β γ δ)
 # ---------------------------------------------------------------------------
-ALPHA = 0.3   # dwell anomaly weight
-BETA  = 0.3   # revisit score weight
-GAMMA = 0.2   # trajectory irregularity weight
-DELTA = 0.2   # billing bypass weight
+ALPHA = 0.30   # dwell anomaly
+BETA  = 0.30   # revisit score
+GAMMA = 0.20   # trajectory irregularity
+DELTA = 0.20   # billing bypass
 
-# Thresholds used for normalisation.
-_DWELL_ANOMALY_THRESHOLD_S = 30.0   # seconds in one zone → f1 = 1.0
-_REVISIT_SATURATION        = 5      # revisit count that saturates f2 at 1.0
+# Fixed fallback thresholds (used when the population is too small to calibrate).
+_DWELL_ANOMALY_THRESHOLD_S = 60.0   # 60 s in one zone before score rises
+_REVISIT_SATURATION        = 5.0
 
+
+# ---------------------------------------------------------------------------
+# Shared sub-feature helpers
+# ---------------------------------------------------------------------------
+
+def _dwell_f(features: BehaviorFeatures, threshold: float) -> float:
+    if not features.dwell_per_zone or threshold <= 0:
+        return 0.0
+    return min(max(features.dwell_per_zone.values()) / threshold, 1.0)
+
+
+def _revisit_f(features: BehaviorFeatures, saturation: float) -> float:
+    if saturation <= 0:
+        return 0.0
+    return min(sum(features.zone_revisits.values()) / saturation, 1.0)
+
+
+def _apply_weights(f1, f2, f3, f4) -> float:
+    return max(0.0, min(1.0, ALPHA * f1 + BETA * f2 + GAMMA * f3 + DELTA * f4))
+
+
+# ---------------------------------------------------------------------------
+# Stateless scorer — fixed thresholds (kept for backward compat / unit tests)
+# ---------------------------------------------------------------------------
 
 def compute_score(features: BehaviorFeatures) -> BehaviorFeatures:
     """
-    Compute suspicion score for the given BehaviorFeatures and return a new
-    instance with suspicion_score filled in.
-
-    Does NOT modify the input object.
+    Compute suspicion score using fixed normalization thresholds.
+    Kept for backward compatibility with tests and external callers.
     """
-    f1 = _dwell_anomaly(features)
-    f2 = _revisit_score(features)
-    f3 = features.trajectory_irregularity          # already in [0, 1]
+    f1 = _dwell_f(features, _DWELL_ANOMALY_THRESHOLD_S)
+    f2 = _revisit_f(features, _REVISIT_SATURATION)
+    f3 = features.trajectory_irregularity
     f4 = 1.0 if features.billing_bypassed else 0.0
+    score = _apply_weights(f1, f2, f3, f4)
 
-    raw = ALPHA * f1 + BETA * f2 + GAMMA * f3 + DELTA * f4
-    score = max(0.0, min(1.0, raw))
-
-    # Return a copy with the score attached.
     return BehaviorFeatures(
         id=features.id,
         dwell_per_zone=features.dwell_per_zone,
@@ -57,18 +78,111 @@ def compute_score(features: BehaviorFeatures) -> BehaviorFeatures:
 
 
 # ---------------------------------------------------------------------------
-# Sub-feature helpers
+# Adaptive scorer — thresholds calibrate from observed population
 # ---------------------------------------------------------------------------
 
-def _dwell_anomaly(features: BehaviorFeatures) -> float:
-    """Max single-zone dwell time normalised to [0, 1]."""
-    if not features.dwell_per_zone:
-        return 0.0
-    max_dwell = max(features.dwell_per_zone.values())
-    return min(max_dwell / _DWELL_ANOMALY_THRESHOLD_S, 1.0)
+class AdaptiveScorer:
+    """
+    Maintains a running snapshot of each tracked person's latest behavioral
+    values and derives normalization thresholds from the population distribution
+    (mean + K·std) rather than fixed constants.
 
+    After _MIN_SAMPLES distinct persons have been observed the scorer switches
+    from the fixed fallback thresholds to adaptive ones.  This satisfies the
+    project goal: "score weights calibrate to the store's own behavioral
+    distribution — no manually defined thresholds."
 
-def _revisit_score(features: BehaviorFeatures) -> float:
-    """Total zone re-entries normalised to [0, 1]."""
-    total_revisits = sum(features.zone_revisits.values())
-    return min(total_revisits / _REVISIT_SATURATION, 1.0)
+    Usage:
+        scorer = AdaptiveScorer()
+        # inside the per-frame loop:
+        features, breakdown = scorer.compute(features)
+        # after the loop, for final summary:
+        features, breakdown = scorer.compute_final(features)
+    """
+
+    _MIN_SAMPLES = 3    # minimum distinct persons before adaptive mode engages
+    _K           = 1.5  # anomaly multiplier: threshold = mean + K * std
+
+    def __init__(self) -> None:
+        # One entry per person ID — overwritten each frame with latest value.
+        self._dwell:   dict[int, float] = {}
+        self._revisit: dict[int, float] = {}
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def compute(self, features: BehaviorFeatures):
+        """
+        Update population pool from this person's current snapshot, then score.
+
+        Returns (updated_BehaviorFeatures, breakdown) where breakdown is a dict
+        mapping feature name → integer contribution to score on 0-100 scale.
+        """
+        # Update population pool (overwrite, not append — one entry per person).
+        self._dwell[features.id]   = max(features.dwell_per_zone.values(), default=0.0)
+        self._revisit[features.id] = float(sum(features.zone_revisits.values()))
+
+        return self._score(features)
+
+    def compute_final(self, features: BehaviorFeatures):
+        """Score using current thresholds without updating the population pool."""
+        return self._score(features)
+
+    def is_calibrated(self) -> bool:
+        return len(self._dwell) >= self._MIN_SAMPLES
+
+    def n_samples(self) -> int:
+        return len(self._dwell)
+
+    def current_thresholds(self) -> dict:
+        """Return the active normalization thresholds (for UI display)."""
+        return {
+            "dwell_s":  round(self._thresh(list(self._dwell.values()),   _DWELL_ANOMALY_THRESHOLD_S), 1),
+            "revisits": round(self._thresh(list(self._revisit.values()), _REVISIT_SATURATION), 1),
+            "adaptive": self.is_calibrated(),
+            "n":        self.n_samples(),
+        }
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _thresh(self, pool: list, fallback: float) -> float:
+        """Compute adaptive threshold; fall back to fixed value if too few samples."""
+        if len(pool) < self._MIN_SAMPLES:
+            return fallback
+        arr = np.array(pool, dtype=float)
+        t = float(arr.mean() + self._K * arr.std())
+        # Never collapse below 10 % of fallback (avoid divide-by-near-zero).
+        return max(t, fallback * 0.10)
+
+    def _score(self, features: BehaviorFeatures):
+        dt = self._thresh(list(self._dwell.values()),   _DWELL_ANOMALY_THRESHOLD_S)
+        rt = self._thresh(list(self._revisit.values()), _REVISIT_SATURATION)
+
+        f1 = _dwell_f(features, dt)
+        f2 = _revisit_f(features, rt)
+        f3 = features.trajectory_irregularity
+        f4 = 1.0 if features.billing_bypassed else 0.0
+
+        score = _apply_weights(f1, f2, f3, f4)
+
+        breakdown = {
+            "Dwell anomaly":     round(f1 * ALPHA * 100),
+            "Zone revisits":     round(f2 * BETA  * 100),
+            "Path irregularity": round(f3 * GAMMA * 100),
+            "Billing bypass":    round(f4 * DELTA * 100),
+        }
+
+        updated = BehaviorFeatures(
+            id=features.id,
+            dwell_per_zone=features.dwell_per_zone,
+            zone_revisits=features.zone_revisits,
+            zone_sequence=features.zone_sequence,
+            billing_bypassed=features.billing_bypassed,
+            trajectory_irregularity=features.trajectory_irregularity,
+            suspicion_score=score,
+            alert_reasons=features.alert_reasons,
+        )
+        return updated, breakdown
