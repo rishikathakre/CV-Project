@@ -173,6 +173,7 @@ class AdaptiveScorer:
             "Zone revisits":     round(f2 * BETA  * 100),
             "Path irregularity": round(f3 * GAMMA * 100),
             "Billing bypass":    round(f4 * DELTA * 100),
+            "raw":               [f1, f2, f3, f4],   # exact normalized values for SHAP
         }
 
         updated = BehaviorFeatures(

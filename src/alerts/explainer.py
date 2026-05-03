@@ -6,7 +6,7 @@ and a list of plain-English reason strings that explain why the score is elevate
 
 Alert level rules (applied in priority order — first match wins for level):
   HIGH   : billing_bypassed is True
-  HIGH   : any zone has 3+ revisits
+  HIGH   : any zone has 2+ revisits
   HIGH   : suspicion_score >= 0.7
   MEDIUM : any shelf zone dwell > 30 seconds
   MEDIUM : suspicion_score >= 0.4
@@ -22,7 +22,7 @@ from shared.data_types import BehaviorFeatures
 _HIGH_SCORE_THRESHOLD   = 0.7
 _MEDIUM_SCORE_THRESHOLD = 0.5
 _SHELF_DWELL_MEDIUM_S   = 60.0   # seconds in a shelf zone before MEDIUM alert
-_HIGH_REVISIT_COUNT     = 3
+_HIGH_REVISIT_COUNT     = 2
 
 _SHELF_ZONES_CANONICAL = {"shelves_left", "shelves_center", "shelves_right"}
 

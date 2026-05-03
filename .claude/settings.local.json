@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -m unittest discover tests -v)",
+      "Bash(python tests/test_scoring.py)",
+      "Bash(python tests/test_explainer.py)",
+      "Bash(python tests/test_zone_mapper.py)",
+      "Bash(pkill -f \"streamlit run\")",
+      "Bash(streamlit run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501/healthz)",
+      "Bash(python -c \"import shap; print\\('shap ok'\\)\")",
+      "Bash(python -c \"import matplotlib; print\\('matplotlib ok'\\)\")"
+    ]
+  }
+}

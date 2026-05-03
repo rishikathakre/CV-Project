@@ -56,6 +56,11 @@ from src.tracking.tracker import PersonTracker
 from src.zone_graph.graph import ZoneTransitionGraph
 from src.zone_graph.zone_mapper import ZoneMapper
 
+# Phase 2 — XAI & Evaluation
+from src.explainability.shap_explainer import SHAPExplainer, plot_waterfall, plot_summary_bar
+from src.evaluation.metrics import classification_report
+from src.evaluation.grid_search import run_grid_search
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -479,7 +484,17 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
             custom_zones[name] = pts
 
         st.session_state["custom_zones"] = custom_zones
-        st.session_state["zones_video"]  = st.session_state.get("_video_name", "")
+        video_name_save = st.session_state.get("_video_name", "")
+        st.session_state["zones_video"]  = video_name_save
+
+        # Persist to disk so the same video reloads its zones automatically
+        if video_name_save:
+            import yaml as _yaml
+            stem = Path(video_name_save).stem
+            zone_cfg = PROJECT_ROOT / "configs" / f"zones_{stem}.yaml"
+            with open(zone_cfg, "w") as _zf:
+                _yaml.dump({n: v.tolist() for n, v in custom_zones.items()}, _zf)
+
         st.rerun()
 
 
@@ -526,12 +541,13 @@ def main() -> None:
         conf_threshold = st.slider("Detection confidence", 0.1, 0.9, 0.4, step=0.05)
         max_age = st.slider(
             "Track memory (frames)",
-            min_value=10, max_value=300, value=150, step=10,
-            help="Frames a lost track is kept alive. 90 @ 25 fps ≈ 3.6 s.",
+            min_value=5, max_value=150, value=30, step=5,
+            help="Frames a lost track is kept alive before being deleted. 30 @ 25 fps ≈ 1.2 s.",
         )
         iou_threshold = st.slider(
-            "IoU match threshold",
-            min_value=0.01, max_value=0.5, value=0.10, step=0.01,
+            "Match score threshold",
+            min_value=0.05, max_value=0.6, value=0.25, step=0.05,
+            help="Minimum combined IoU+appearance score to match a detection to an existing track. Raise if IDs still swap; lower if tracks are lost.",
         )
         st.markdown('<div class="section-label">Zone Layout</div>', unsafe_allow_html=True)
         zone_mode = st.radio(
@@ -570,6 +586,18 @@ def main() -> None:
         # Different video uploaded — clear old custom zones
         st.session_state.pop("custom_zones", None)
         st.session_state.pop("zones_video", None)
+
+    # Auto-load persisted zones for this video if none are in session yet
+    if zone_mode == "Draw custom zones" and not st.session_state.get("custom_zones"):
+        import yaml as _yaml
+        _stem = Path(uploaded.name).stem
+        _zone_cfg = PROJECT_ROOT / "configs" / f"zones_{_stem}.yaml"
+        if _zone_cfg.exists():
+            with open(_zone_cfg) as _zf:
+                _raw = _yaml.safe_load(_zf) or {}
+            if _raw:
+                st.session_state["custom_zones"] = {n: np.array(v, dtype=np.float32) for n, v in _raw.items()}
+                st.session_state["zones_video"] = uploaded.name
 
     # ------------------------------------------------------------------ #
     # PRE-RUN PHASE  (Run button not pressed yet)
@@ -688,6 +716,11 @@ def main() -> None:
     behavior_tracker = BehaviorTracker(fps=fps)
     adaptive_scorer = AdaptiveScorer()
 
+    # ---- Phase 2 components ----
+    shap_explainer = SHAPExplainer()
+    # Final (pid -> (BehaviorFeatures, [f1,f2,f3,f4])) used by grid search
+    all_final_features: dict[int, tuple] = {}
+
     # ---- Layout ----
     metrics_ph = st.empty()
 
@@ -711,6 +744,11 @@ def main() -> None:
     st.divider()
     st.markdown('<div class="section-label">Risk Score Timeline</div>', unsafe_allow_html=True)
     timeline_ph = st.empty()
+
+    st.divider()
+    st.markdown('<div class="section-label">XAI — Live Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
+    st.caption("Which behavioural features are pushing each person's risk above or below the crowd average.")
+    shap_live_ph = st.empty()
 
     # ---- State ----
     heatmap_acc = np.zeros((frame_h, frame_w), dtype=np.float32)
@@ -737,6 +775,7 @@ def main() -> None:
         heatmap_acc = _update_heatmap(heatmap_acc, tracked_persons)
 
         current_scores: dict = {}
+        current_alert_levels: dict = {}   # pid -> true alert level (rule + score)
         current_alerts: list = []
 
         for person in tracked_persons:
@@ -744,15 +783,20 @@ def main() -> None:
             features, breakdown = adaptive_scorer.compute(features)
             features = generate_alert(features)
             pid = person.id
+            level = get_alert_level(features)
             current_scores[pid] = features.suspicion_score
+            current_alert_levels[pid] = level
             score_breakdowns[pid] = breakdown
+            raw = breakdown.get("raw", [0.0, 0.0, 0.0, 0.0])
+            shap_explainer.update(pid, raw)
+            all_final_features[pid] = (features, raw)
             if pid not in score_history:
                 score_history[pid] = []
                 frame_history[pid] = []
             score_history[pid].append(features.suspicion_score)
             frame_history[pid].append(frame_idx)
-            if get_alert_level(features) in ("MEDIUM", "HIGH"):
-                current_alerts.append((pid, get_alert_level(features), features.alert_reasons))
+            if level in ("MEDIUM", "HIGH"):
+                current_alerts.append((pid, level, features.alert_reasons))
 
         # ---- Video: update every frame ----
         annotated_rgb = _annotate_frame(
@@ -774,24 +818,19 @@ def main() -> None:
             alerts_ph.markdown(_alerts_html(current_alerts), unsafe_allow_html=True)
 
             if current_scores:
-                def _risk_label(s):
-                    if s >= 0.65:
-                        return "🔴 HIGH"
-                    if s >= 0.35:
-                        return "🟠 MED"
-                    return "🟢 LOW"
-
+                _LEVEL_ICON = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡", "NONE": "🟢"}
                 rows = []
                 for pid, s in sorted(current_scores.items()):
-                    bd = score_breakdowns.get(pid, {})
+                    bd  = score_breakdowns.get(pid, {})
+                    lvl = current_alert_levels.get(pid, "NONE")
                     rows.append({
-                        "Person":        f"ID {pid}",
-                        "Score":         f"{s:.3f}",
-                        "Risk":          _risk_label(s),
-                        "Dwell":         bd.get("Dwell anomaly", 0),
-                        "Revisits":      bd.get("Zone revisits", 0),
-                        "Irregular":     bd.get("Path irregularity", 0),
-                        "BillingBypass": bd.get("Billing bypass", 0),
+                        "Person":    f"ID {pid}",
+                        "Score":     f"{s:.3f}",
+                        "Alert":     f"{_LEVEL_ICON.get(lvl, '')} {lvl}",
+                        "Dwell":     bd.get("Dwell anomaly", 0),
+                        "Revisits":  bd.get("Zone revisits", 0),
+                        "Irregular": bd.get("Path irregularity", 0),
+                        "Bypass":    bd.get("Billing bypass", 0),
                     })
                 scores_ph.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -817,6 +856,14 @@ def main() -> None:
                 })
                 timeline_ph.line_chart(timeline_df, height=180)
 
+            # ---- Live SHAP summary bar ----
+            import matplotlib.pyplot as _plt
+            live_exp = shap_explainer.explain_all()
+            if live_exp:
+                _fig_live = plot_summary_bar(live_exp)
+                shap_live_ph.pyplot(_fig_live)
+                _plt.close(_fig_live)
+
         pct = int((frame_idx + 1) / max_frames * 100)
         progress.progress(
             min(pct, 100),
@@ -836,6 +883,10 @@ def main() -> None:
         for pid, feat in sorted(all_features.items()):
             feat, bd = adaptive_scorer.compute_final(feat)
             feat = generate_alert(feat)
+            # Refresh Phase 2 state with final (most accurate) values
+            raw_final = bd.get("raw", all_final_features.get(pid, (None, [0.0, 0.0, 0.0, 0.0]))[1])
+            all_final_features[pid] = (feat, raw_final)
+            shap_explainer.update(pid, raw_final)
             level = get_alert_level(feat)
             rows.append({
                 "Person":           f"ID {pid}",
@@ -854,8 +905,108 @@ def main() -> None:
         st.info("No persons were tracked in the processed frames.")
 
     st.divider()
-    st.markdown('<div class="section-label">Final Heatmap</div>', unsafe_allow_html=True)
-    st.image(_render_heatmap(heatmap_acc, scale=scale), channels="RGB", use_container_width=True)
+    col_hm, col_shap_sum = st.columns(2)
+    with col_hm:
+        st.markdown('<div class="section-label">Final Heatmap</div>', unsafe_allow_html=True)
+        st.image(_render_heatmap(heatmap_acc, scale=scale), channels="RGB", use_container_width=True)
+    with col_shap_sum:
+        st.markdown('<div class="section-label">XAI — Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
+        import matplotlib.pyplot as _plt
+        explanations = shap_explainer.explain_all()
+        if explanations:
+            _fig_sum = plot_summary_bar(explanations)
+            st.pyplot(_fig_sum)
+            _plt.close(_fig_sum)
+            st.caption("Mean |SHAP value| per feature across all tracked persons. Shows which behavioural signal contributes most to risk in this scene.")
+        else:
+            st.info("Need 2+ tracked persons to compute SHAP baseline.")
+
+    # ---- Per-person SHAP waterfall charts ----
+    if explanations:
+        st.divider()
+        st.markdown('<div class="section-label">XAI — Per-Person Attribution (SHAP Waterfall)</div>', unsafe_allow_html=True)
+        st.caption("Red = feature pushed this person's risk ABOVE the crowd average. Green = below average. Base value = population mean risk.")
+        n_cols = min(len(explanations), 3)
+        wf_cols = st.columns(n_cols)
+        for i, (pid, exp) in enumerate(sorted(explanations.items())):
+            with wf_cols[i % n_cols]:
+                _fig_wf = plot_waterfall(exp, pid)
+                st.pyplot(_fig_wf)
+                _plt.close(_fig_wf)
+
+    # ------------------------------------------------------------------ #
+    # PHASE 2 — Evaluation & Hyperparameter Tuning
+    # ------------------------------------------------------------------ #
+    st.divider()
+    st.markdown('<div class="section-label">Evaluation & Hyperparameter Grid Search</div>', unsafe_allow_html=True)
+    import json as _json
+    st.caption(
+        "Upload a ground truth JSON file (see `data/ground_truth_sample.json`) "
+        "to compute precision / recall / F1 and find optimal scoring weights. "
+        "Person IDs match those in the Final Summary table above."
+    )
+    gt_file = st.file_uploader("Ground truth JSON", type=["json"], key="gt_upload_phase2")
+    if gt_file:
+        gt_data = _json.load(gt_file)
+        video_stem = Path(st.session_state.get("_video_name", "")).stem
+        gt_for_video = gt_data.get("videos", {}).get(video_stem, {})
+
+        if not gt_for_video:
+            st.warning(
+                f"No annotations for **'{video_stem}'** in this file. "
+                f"Available: `{list(gt_data.get('videos', {}).keys())}`"
+            )
+        else:
+            ground_truth = {int(k): v for k, v in gt_for_video.items()}
+            common_pids  = [pid for pid in all_final_features if pid in ground_truth]
+
+            if not common_pids:
+                st.warning(
+                    "No overlap between tracked IDs "
+                    f"{sorted(all_final_features.keys())} and GT IDs "
+                    f"{sorted(ground_truth.keys())}."
+                )
+            else:
+                y_true  = [ground_truth[pid] for pid in common_pids]
+                y_pred  = [get_alert_level(all_final_features[pid][0]) for pid in common_pids]
+                report  = classification_report(y_true, y_pred)
+
+                col_rep, col_gs = st.columns(2)
+                with col_rep:
+                    st.markdown("**Classification Report**")
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"Class": c, "Precision": f"{v['precision']:.3f}",
+                             "Recall": f"{v['recall']:.3f}", "F1": f"{v['f1']:.3f}",
+                             "Support": v["support"]}
+                            for c, v in report.items()
+                        ]),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.metric("Macro F1 (α=0.30 β=0.30 γ=0.20 δ=0.20)",
+                              f"{report.get('macro avg', {}).get('f1', 0):.3f}")
+
+                with col_gs:
+                    st.markdown("**Weight Grid Search**")
+                    st.caption("~286 combinations, step=0.1, α+β+γ+δ=1")
+                    if st.button("▶  Run grid search", key="run_grid_search"):
+                        with st.spinner("Searching…"):
+                            best, all_results = run_grid_search(
+                                all_final_features, ground_truth, step=0.1
+                            )
+                        if best:
+                            st.success(
+                                f"Best: α={best['alpha']} β={best['beta']} "
+                                f"γ={best['gamma']} δ={best['delta']} "
+                                f"→ macro-F1 = {best['macro_f1']:.3f}"
+                            )
+                            top10 = pd.DataFrame(all_results[:10]).rename(columns={
+                                "alpha": "α", "beta": "β",
+                                "gamma": "γ", "delta": "δ", "macro_f1": "F1"
+                            })
+                            st.dataframe(top10, use_container_width=True, hide_index=True)
+                        else:
+                            st.warning("No results — check ID overlap.")
 
 
 if __name__ == "__main__":

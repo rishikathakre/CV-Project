@@ -1,5 +1,5 @@
 """
-Scenario simulator — test the behavioral pipeline without any video or YOLO.
+Scenario simulator -test the behavioral pipeline without any video or YOLO.
 
 Directly feeds zone trajectories into BehaviorTracker + AdaptiveScorer + explainer
 and prints a colour-coded summary of alert levels per scenario.
@@ -44,12 +44,12 @@ _LEVEL_COLOR = {
 # Scenario definitions
 # ---------------------------------------------------------------------------
 # Each scenario is a list of (zone_name, seconds_in_zone) tuples.
-# The simulator converts seconds → frame count and feeds each zone for that
+# The simulator converts seconds -> frame count and feeds each zone for that
 # many frames (so dwell time and debounce both work realistically).
 
 SCENARIOS = [
     {
-        "name": "Normal shopper — visits billing before leaving",
+        "name": "Normal shopper -visits billing before leaving",
         "path": [
             ("entrance",  3),
             ("walkway",   4),
@@ -59,7 +59,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Billing bypass — shelves → exit, skips billing",
+        "name": "Billing bypass -shelves -> exit, skips billing",
         "path": [
             ("entrance",  3),
             ("walkway",   4),
@@ -68,7 +68,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Shelf loiterer — lingers at shelves 90+ seconds",
+        "name": "Shelf loiterer -lingers at shelves 90+ seconds",
         "path": [
             ("entrance",  3),
             ("shelves",  95),
@@ -77,7 +77,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Zone revisitor — re-enters shelves 3 times",
+        "name": "Zone revisitor -re-enters shelves 3 times",
         "path": [
             ("entrance",  3),
             ("shelves",  15),
@@ -89,7 +89,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Suspicious — multiple revisits + billing bypass",
+        "name": "Suspicious -multiple revisits + billing bypass",
         "path": [
             ("entrance",  3),
             ("shelves",  20),
@@ -101,7 +101,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Walk-through — just passing, no shelves",
+        "name": "Walk-through -just passing, no shelves",
         "path": [
             ("entrance",  2),
             ("walkway",  10),
@@ -109,7 +109,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Window shopper — brief shelf visit, leaves via billing",
+        "name": "Window shopper -brief shelf visit, leaves via billing",
         "path": [
             ("entrance",  3),
             ("walkway",   5),
@@ -120,7 +120,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Erratic movement — shelf bouncing back and forth",
+        "name": "Erratic movement -shelf bouncing back and forth",
         "path": [
             ("entrance",       3),
             ("shelves_left",   8),
@@ -179,7 +179,7 @@ def _run_scenario(pid: int, path: list, tracker: BehaviorTracker,
 
 def main():
     print(f"\n{'='*70}")
-    print(f"  {_BOLD}Retail Risk Monitor — Scenario Simulator{_RESET}")
+    print(f"  {_BOLD}Retail Risk Monitor -Scenario Simulator{_RESET}")
     print(f"{'='*70}\n")
 
     # A shared AdaptiveScorer calibrates across all scenarios (simulates a
@@ -200,7 +200,7 @@ def main():
 
     for name, r in results:
         color = _LEVEL_COLOR.get(r["level"], "")
-        bypass_str = "YES ⚠" if r["bypass"] else "no"
+        bypass_str = "YES (!)" if r["bypass"] else "no"
         print(
             f"  {name:<{col_w}}  "
             f"{color}{r['level']:<8}{_RESET}  "
@@ -218,7 +218,7 @@ def main():
         color = _LEVEL_COLOR.get(r["level"], "")
         print(f"\n  {_BOLD}{name}{_RESET}")
         print(f"    Alert   : {color}{r['level']}{_RESET}  (score {r['score']:.3f})")
-        print(f"    Zones   : {' → '.join(r['zones'])}")
+        print(f"    Zones   : {' -> '.join(r['zones'])}")
         print(f"    Dwell   : {r['dwell']}")
         bk = r["breakdown"]
         print(

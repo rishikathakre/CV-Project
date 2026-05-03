@@ -1,8 +1,12 @@
 ultralytics
-opencv-python
+opencv-python-headless
 deep-sort-realtime
 networkx
 streamlit
+streamlit-drawable-canvas
 numpy
 pandas
 pyyaml
+shap
+matplotlib
+scikit-learn
