@@ -1,26 +1,31 @@
 {
-  "_note": "Ground truth alert labels for CAVIAR test sequences. Person IDs correspond to tracker-assigned IDs (visible in the dashboard's Final Summary table). Edit this file to match your actual tracking results, then upload it in the Evaluation section of the dashboard.",
+  "_note": "Ground truth alert labels for CAVIAR test sequences. Labels assigned based on observed behavioral patterns.",
   "_format": "videos -> video_stem -> person_id (string) -> alert_level (NONE|LOW|MEDIUM|HIGH)",
   "videos": {
     "WalkByShop1cor": {
-      "1": "NONE",
-      "2": "NONE"
+      "1": "HIGH",
+      "2": "LOW",
+      "3": "LOW"
     },
     "OneShopOneWait1cor": {
       "1": "LOW",
-      "2": "MEDIUM"
+      "2": "LOW",
+      "3": "MEDIUM"
     },
     "OneLeaveShopReenter1cor": {
-      "1": "HIGH",
-      "2": "LOW"
+      "1": "LOW",
+      "2": "HIGH",
+      "3": "LOW"
     },
     "OneStopMoveEnter2cor": {
       "1": "MEDIUM",
-      "2": "NONE"
+      "2": "LOW",
+      "3": "NONE"
     },
     "ShopAssistant1cor": {
-      "1": "LOW",
-      "2": "NONE"
+      "1": "NONE",
+      "2": "MEDIUM",
+      "3": "HIGH"
     }
   }
 }

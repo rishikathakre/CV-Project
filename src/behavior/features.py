@@ -38,6 +38,10 @@ def _is_exit_zone(zone: str) -> bool:
 # transition and counting it as a revisit.
 _ZONE_DEBOUNCE_FRAMES = 8
 
+# Billing bypass: only flag if the person spent this many frames in a shelf zone.
+# Prevents false positives from people who just pass through the scene quickly.
+_MIN_SHELF_FRAMES_FOR_BYPASS = 500   # ≈ 20 seconds at 25 fps
+
 
 class _PersonState:
     """Internal mutable state for a single tracked person."""
@@ -59,9 +63,10 @@ class _PersonState:
         self.visited_zones: set = set()
 
         # Billing-bypass flags.
-        self.billing_seen:     bool = False
-        self.billing_bypassed: bool = False
-        self.shelf_visited:    bool = False
+        self.billing_seen:        bool = False
+        self.billing_bypassed:    bool = False
+        self.shelf_visited:       bool = False
+        self.shelf_dwell_frames:  int  = 0
 
         # Last *committed* zone (after debounce).
         self.last_zone: Optional[str] = None
@@ -115,9 +120,13 @@ class _PersonState:
         # ---- Billing-bypass detection ----
         if _is_shelf_zone(committed):
             self.shelf_visited = True
+            self.shelf_dwell_frames += 1
         if _is_billing_zone(committed):
             self.billing_seen = True
-        if _is_exit_zone(committed) and self.shelf_visited and not self.billing_seen:
+        if (_is_exit_zone(committed)
+                and self.shelf_visited
+                and not self.billing_seen
+                and self.shelf_dwell_frames >= _MIN_SHELF_FRAMES_FOR_BYPASS):
             self.billing_bypassed = True
 
         return transition_from

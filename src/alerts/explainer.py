@@ -20,9 +20,10 @@ from shared.data_types import BehaviorFeatures
 
 # Thresholds
 _HIGH_SCORE_THRESHOLD   = 0.7
-_MEDIUM_SCORE_THRESHOLD = 0.5
+_MEDIUM_SCORE_THRESHOLD = 0.45
 _SHELF_DWELL_MEDIUM_S   = 60.0   # seconds in a shelf zone before MEDIUM alert
 _HIGH_REVISIT_COUNT     = 2
+_LOW_MIN_THRESHOLD      = 0.05   # minimum score to promote NONE → LOW (dead-zone)
 
 _SHELF_ZONES_CANONICAL = {"shelves_left", "shelves_center", "shelves_right"}
 
@@ -119,7 +120,7 @@ def _evaluate(features: BehaviorFeatures) -> Tuple[str, List[str]]:
             )
 
     # --- LOW catch-all ---
-    if level == "NONE" and features.suspicion_score > 0.0:
+    if level == "NONE" and features.suspicion_score >= _LOW_MIN_THRESHOLD:
         level = "LOW"
         reasons.append(
             f"Minor suspicious indicators detected "
