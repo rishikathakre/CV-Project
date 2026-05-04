@@ -522,6 +522,160 @@ def _extract_first_frame(uploaded) -> tuple[np.ndarray | None, str]:
 
 
 # ---------------------------------------------------------------------------
+# Evaluation UI — extracted so it can be shown in both the pipeline path
+# and the pre-run (rerender) path via session-state cached features.
+# ---------------------------------------------------------------------------
+
+def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
+    import json as _json
+    import matplotlib.pyplot as _plt
+
+    st.divider()
+    st.markdown('<div class="section-label">Model Training Results — Evaluation & Optimisation</div>', unsafe_allow_html=True)
+    st.caption(
+        "Upload a ground truth JSON file (see `data/ground_truth_sample.json`) "
+        "to compute accuracy, precision, recall, F1 and find optimal scoring weights. "
+        "Person IDs match those in the Final Summary table above."
+    )
+    gt_file = st.file_uploader("Ground truth JSON", type=["json"], key="gt_upload_phase2")
+    if not gt_file:
+        return
+
+    gt_data = _json.load(gt_file)
+    gt_for_video = gt_data.get("videos", {}).get(video_stem, {})
+
+    if not gt_for_video:
+        st.warning(
+            f"No annotations for **'{video_stem}'** in this file. "
+            f"Available: `{list(gt_data.get('videos', {}).keys())}`"
+        )
+        return
+
+    ground_truth = {int(k): v for k, v in gt_for_video.items()}
+    common_pids  = [pid for pid in all_final_features if pid in ground_truth]
+
+    if not common_pids:
+        st.warning(
+            "No overlap between tracked IDs "
+            f"{sorted(all_final_features.keys())} and GT IDs "
+            f"{sorted(ground_truth.keys())}."
+        )
+        return
+
+    y_true = [ground_truth[pid] for pid in common_pids]
+    y_pred = [get_alert_level(all_final_features[pid][0]) for pid in common_pids]
+    report = classification_report(y_true, y_pred)
+
+    accuracy   = sum(t == p for t, p in zip(y_true, y_pred)) / len(y_true)
+    macro_f1   = report.get("macro avg", {}).get("f1",        0.0)
+    macro_prec = report.get("macro avg", {}).get("precision", 0.0)
+    macro_rec  = report.get("macro avg", {}).get("recall",    0.0)
+
+    # ── Top metric cards ──────────────────────────────────────────────────────
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Accuracy",         f"{accuracy:.1%}")
+    m2.metric("Macro F1",         f"{macro_f1:.3f}")
+    m3.metric("Macro Precision",  f"{macro_prec:.3f}")
+    m4.metric("Macro Recall",     f"{macro_rec:.3f}")
+
+    st.divider()
+
+    # ── Classification report + Confusion matrix ──────────────────────────────
+    col_rep, col_cm = st.columns(2)
+
+    with col_rep:
+        st.markdown("**Classification Report**")
+        st.dataframe(
+            pd.DataFrame([
+                {"Class": c,
+                 "Precision": f"{v['precision']:.3f}",
+                 "Recall":    f"{v['recall']:.3f}",
+                 "F1":        f"{v['f1']:.3f}",
+                 "Support":   v["support"]}
+                for c, v in report.items()
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+
+    with col_cm:
+        st.markdown("**Confusion Matrix**")
+        LEVELS  = ["NONE", "LOW", "MEDIUM", "HIGH"]
+        classes = [l for l in LEVELS if l in set(y_true) | set(y_pred)]
+        n       = len(classes)
+        idx     = {c: i for i, c in enumerate(classes)}
+        cm      = np.zeros((n, n), dtype=int)
+        for t, p in zip(y_true, y_pred):
+            cm[idx[t]][idx[p]] += 1
+
+        fig_cm, ax = _plt.subplots(figsize=(4, 3))
+        fig_cm.patch.set_facecolor("#0d1117")
+        ax.set_facecolor("#161b22")
+        im = ax.imshow(cm, cmap="Blues", vmin=0, vmax=max(cm.max(), 1))
+        ax.set_xticks(range(n));  ax.set_xticklabels(classes, color="white", fontsize=9)
+        ax.set_yticks(range(n));  ax.set_yticklabels(classes, color="white", fontsize=9)
+        ax.set_xlabel("Predicted", color="#8b949e", fontsize=9)
+        ax.set_ylabel("True",      color="#8b949e", fontsize=9)
+        ax.tick_params(colors="white")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#30363d")
+        threshold = cm.max() * 0.55
+        for i in range(n):
+            for j in range(n):
+                ax.text(j, i, str(cm[i, j]),
+                        ha="center", va="center", fontsize=13, fontweight="bold",
+                        color="#0d1117" if cm[i, j] > threshold else "white")
+        _plt.tight_layout(pad=0.5)
+        st.pyplot(fig_cm)
+        _plt.close(fig_cm)
+
+    st.divider()
+
+    # ── Grid search + optimisation curve ─────────────────────────────────────
+    st.markdown("**Weight Grid Search** — optimises (α, β, γ, δ) to maximise macro-F1")
+    st.caption("α = dwell anomaly  ·  β = zone revisits  ·  γ = path irregularity  ·  δ = billing bypass  ·  286 combinations, step = 0.1, α+β+γ+δ = 1")
+
+    if st.button("▶  Run grid search", key="run_grid_search"):
+        with st.spinner("Searching 286 weight combinations…"):
+            best, all_results = run_grid_search(all_final_features, ground_truth, step=0.1)
+
+        if not best:
+            st.warning("No results — check ID overlap.")
+            return
+
+        st.success(
+            f"Best weights found:  α = {best['alpha']}  β = {best['beta']} "
+            f" γ = {best['gamma']}  δ = {best['delta']}  →  macro-F1 = **{best['macro_f1']:.3f}**"
+        )
+
+        col_curve, col_top = st.columns(2)
+
+        with col_curve:
+            st.markdown("**Optimisation Curve**")
+            st.caption("Each point = one weight combination. Running-max line shows the best F1 found so far as the search progresses.")
+
+            # Reverse so the curve goes worst → best (natural search convergence look)
+            f1_vals = [r["macro_f1"] for r in reversed(all_results)]
+            running_max, cur = [], 0.0
+            for v in f1_vals:
+                cur = max(cur, v)
+                running_max.append(cur)
+
+            curve_df = pd.DataFrame({
+                "F1":              f1_vals,
+                "Best F1 so far":  running_max,
+            }, index=range(1, len(f1_vals) + 1))
+            curve_df.index.name = "Combination #"
+            st.line_chart(curve_df, height=240)
+
+        with col_top:
+            st.markdown("**Top 10 Weight Combinations**")
+            top10 = pd.DataFrame(all_results[:10]).rename(columns={
+                "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "macro_f1": "F1"
+            })
+            st.dataframe(top10, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Main dashboard
 # ---------------------------------------------------------------------------
 
@@ -646,6 +800,10 @@ def main() -> None:
                 st.markdown('<div class="section-label">Draw Zones — first frame</div>', unsafe_allow_html=True)
                 _zone_draw_ui(first_frame)
 
+            # Show evaluation panel if a previous pipeline run exists for this video
+            _ev_features = st.session_state.get("_pipeline_features", {})
+            if _ev_features and st.session_state.get("_pipeline_video") == uploaded.name:
+                _show_evaluation(_ev_features, Path(uploaded.name).stem)
             return
 
         # ---- Other zone modes: static preview ----
@@ -669,6 +827,11 @@ def main() -> None:
         elif zone_mode == "CAVIAR config (384×288)" and (ph != 288 or pw != 384):
             st.warning(f"Video is {pw}×{ph} but CAVIAR config expects 384×288 — zones will be misaligned. Switch to **Auto** or **Draw custom zones**.")
         st.info("Zones look correct? Press **▶ Run pipeline** in the sidebar to start.")
+
+        # Show evaluation panel if a previous pipeline run exists for this video
+        _ev_features = st.session_state.get("_pipeline_features", {})
+        if _ev_features and st.session_state.get("_pipeline_video") == uploaded.name:
+            _show_evaluation(_ev_features, Path(uploaded.name).stem)
         return
 
     # ------------------------------------------------------------------ #
@@ -908,6 +1071,11 @@ def main() -> None:
     else:
         st.info("No persons were tracked in the processed frames.")
 
+    # Cache pipeline results so the evaluation section survives rerenders
+    # (e.g. when the user uploads a ground truth file and Streamlit reruns).
+    st.session_state["_pipeline_features"] = all_final_features
+    st.session_state["_pipeline_video"]    = uploaded.name
+
     st.divider()
     col_hm, col_shap_sum = st.columns(2)
     with col_hm:
@@ -941,76 +1109,7 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # PHASE 2 — Evaluation & Hyperparameter Tuning
     # ------------------------------------------------------------------ #
-    st.divider()
-    st.markdown('<div class="section-label">Evaluation & Hyperparameter Grid Search</div>', unsafe_allow_html=True)
-    import json as _json
-    st.caption(
-        "Upload a ground truth JSON file (see `data/ground_truth_sample.json`) "
-        "to compute precision / recall / F1 and find optimal scoring weights. "
-        "Person IDs match those in the Final Summary table above."
-    )
-    gt_file = st.file_uploader("Ground truth JSON", type=["json"], key="gt_upload_phase2")
-    if gt_file:
-        gt_data = _json.load(gt_file)
-        video_stem = Path(st.session_state.get("_video_name", "")).stem
-        gt_for_video = gt_data.get("videos", {}).get(video_stem, {})
-
-        if not gt_for_video:
-            st.warning(
-                f"No annotations for **'{video_stem}'** in this file. "
-                f"Available: `{list(gt_data.get('videos', {}).keys())}`"
-            )
-        else:
-            ground_truth = {int(k): v for k, v in gt_for_video.items()}
-            common_pids  = [pid for pid in all_final_features if pid in ground_truth]
-
-            if not common_pids:
-                st.warning(
-                    "No overlap between tracked IDs "
-                    f"{sorted(all_final_features.keys())} and GT IDs "
-                    f"{sorted(ground_truth.keys())}."
-                )
-            else:
-                y_true  = [ground_truth[pid] for pid in common_pids]
-                y_pred  = [get_alert_level(all_final_features[pid][0]) for pid in common_pids]
-                report  = classification_report(y_true, y_pred)
-
-                col_rep, col_gs = st.columns(2)
-                with col_rep:
-                    st.markdown("**Classification Report**")
-                    st.dataframe(
-                        pd.DataFrame([
-                            {"Class": c, "Precision": f"{v['precision']:.3f}",
-                             "Recall": f"{v['recall']:.3f}", "F1": f"{v['f1']:.3f}",
-                             "Support": v["support"]}
-                            for c, v in report.items()
-                        ]),
-                        use_container_width=True, hide_index=True,
-                    )
-                    st.metric("Macro F1 (α=0.30 β=0.30 γ=0.20 δ=0.20)",
-                              f"{report.get('macro avg', {}).get('f1', 0):.3f}")
-
-                with col_gs:
-                    st.markdown("**Weight Grid Search**")
-                    st.caption("~286 combinations, step=0.1, α+β+γ+δ=1")
-                    if st.button("▶  Run grid search", key="run_grid_search"):
-                        with st.spinner("Searching…"):
-                            best, all_results = run_grid_search(
-                                all_final_features, ground_truth, step=0.1
-                            )
-                        if best:
-                            st.success(
-                                f"Best: α={best['alpha']} β={best['beta']} "
-                                f"γ={best['gamma']} δ={best['delta']} "
-                                f"→ macro-F1 = {best['macro_f1']:.3f}"
-                            )
-                            top10 = pd.DataFrame(all_results[:10]).rename(columns={
-                                "alpha": "α", "beta": "β",
-                                "gamma": "γ", "delta": "δ", "macro_f1": "F1"
-                            })
-                            st.dataframe(top10, use_container_width=True, hide_index=True)
-                        else:
-                            st.warning("No results — check ID overlap.")
+    _show_evaluation(all_final_features, Path(uploaded.name).stem)
 
 
 if __name__ == "__main__":
