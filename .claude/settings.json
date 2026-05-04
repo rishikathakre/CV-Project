@@ -15,7 +15,8 @@
       "Bash(pip show *)",
       "Bash(python -c \"import streamlit; print\\(streamlit.__version__\\)\")",
       "Bash(conda run *)",
-      "Bash(conda env *)"
+      "Bash(conda env *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/dashboard/app.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

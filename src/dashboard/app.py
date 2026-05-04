@@ -486,6 +486,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         st.session_state["custom_zones"] = custom_zones
         video_name_save = st.session_state.get("_video_name", "")
         st.session_state["zones_video"]  = video_name_save
+        st.session_state.pop("_is_redrawing", None)   # done redrawing
 
         # Persist to disk so the same video reloads its zones automatically
         if video_name_save:
@@ -587,8 +588,10 @@ def main() -> None:
         st.session_state.pop("custom_zones", None)
         st.session_state.pop("zones_video", None)
 
-    # Auto-load persisted zones for this video if none are in session yet
-    if zone_mode == "Draw custom zones" and not st.session_state.get("custom_zones"):
+    # Auto-load persisted zones for this video if none are in session yet.
+    # Skip while the user is actively redrawing (flag stays until Confirm is clicked).
+    if zone_mode == "Draw custom zones" and not st.session_state.get("custom_zones") \
+            and not st.session_state.get("_is_redrawing"):
         import yaml as _yaml
         _stem = Path(uploaded.name).stem
         _zone_cfg = PROJECT_ROOT / "configs" / f"zones_{_stem}.yaml"
@@ -634,6 +637,7 @@ def main() -> None:
                     if st.button("Redraw zones"):
                         st.session_state.pop("custom_zones", None)
                         st.session_state.pop("zones_video", None)
+                        st.session_state["_is_redrawing"] = True
                         st.rerun()
                 with col_ok:
                     st.info("Press **▶ Run pipeline** in the sidebar to start.")
