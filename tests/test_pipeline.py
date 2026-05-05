@@ -1,17 +1,6 @@
-"""
-Integration smoke-test for the detection → tracking → zone-mapping pipeline.
-
-Usage (from project root):
-    python tests/test_pipeline.py [path/to/video.mpg]
-
-Defaults to the first .mpg found in data/raw/ when no argument is given.
-Runs on the first MAX_FRAMES frames and prints TrackedPerson output.
-"""
-
 import sys
 from pathlib import Path
 
-# Allow imports from project root regardless of working directory.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -41,11 +30,11 @@ def run(video_path: Path) -> None:
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
-    detector = PersonDetector()
-    tracker = PersonTracker()
+    detector    = PersonDetector()
+    tracker     = PersonTracker()
     zone_mapper = ZoneMapper(str(PROJECT_ROOT / "configs" / "store_layout.yaml"))
 
-    frame_idx = 0
+    frame_idx    = 0
     total_persons = 0
 
     while frame_idx < MAX_FRAMES:
@@ -54,10 +43,9 @@ def run(video_path: Path) -> None:
             print(f"[end of video at frame {frame_idx}]")
             break
 
-        detections = detector.detect(frame)
+        detections     = detector.detect(frame)
         tracked_persons = tracker.update(detections, frame, frame_idx, fps)
 
-        # Attach zone to each person.
         for person in tracked_persons:
             person.zone = zone_mapper.get_zone(person.bbox)
             total_persons += 1
@@ -70,7 +58,7 @@ def run(video_path: Path) -> None:
             )
 
         if not tracked_persons and frame_idx % 10 == 0:
-            print(f"frame={frame_idx:4d}  — no confirmed tracks")
+            print(f"frame={frame_idx:4d}  - no confirmed tracks")
 
         frame_idx += 1
 

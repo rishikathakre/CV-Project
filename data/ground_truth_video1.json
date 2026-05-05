@@ -1,5 +1,5 @@
 {
-  "_note": "Ground truth for video1.mp4 — 1 tracked person.",
+  "_note": "Ground truth for video1.mp4 - 1 tracked person.",
   "_format": "videos -> video_stem -> person_id (string) -> alert_level (NONE|LOW|MEDIUM|HIGH)",
   "videos": {
     "video1": {

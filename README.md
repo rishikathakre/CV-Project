@@ -1,36 +1,60 @@
-# CV Project — Retail Suspicious Behavior Detection
+# Retail Suspicious Behaviour Detection
 
-A real-time computer vision pipeline that detects suspicious behavior in retail environments using YOLOv8 person detection, IoU-based tracking, zone transition analysis, and adaptive risk scoring. The results are presented through an interactive Streamlit dashboard.
+Real-time computer vision system that watches retail store footage and flags people who show suspicious behaviour. It uses YOLOv8 to detect people, a Kalman filter to track them across frames, and a rule-based scoring system to raise alerts.
 
-## Running with Docker (single command)
+---
 
-### Prerequisites
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+## Quick start (4 steps)
 
-### Build and run
+### Option A - Docker (recommended, no local Python required)
 
+**Step 1.** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and make sure it is running.
+
+**Step 2.** Clone or unzip the project folder.
+
+**Step 3.** Build and launch with one command:
 ```bash
 docker compose up --build
 ```
 
-Open your browser at **http://localhost:8501**.
+**Step 4.** Open **http://localhost:8501** in your browser.
 
-To stop: `Ctrl+C`, then `docker compose down`.
-
-### What the container includes
-- Python 3.11 runtime with all dependencies pre-installed
-- YOLOv8n model weights (`yolov8n.pt`)
-- Full application source (`src/`, `shared/`, `configs/`)
-- Your local `data/` folder is mounted into the container, so uploaded videos and outputs are preserved between runs
+To stop: press `Ctrl+C`, then run `docker compose down`.
 
 ---
 
-## Running locally (without Docker)
+### Option B - Local Python
 
+**Step 1.** Make sure Python 3.10 or newer is installed.
+
+**Step 2.** Clone or unzip the project folder.
+
+**Step 3.** Install dependencies and start the dashboard:
+```bash
+bash run.sh
+```
+
+Or manually:
 ```bash
 pip install -r requirements.txt
 streamlit run src/dashboard/app.py
 ```
+
+**Step 4.** Open **http://localhost:8501** in your browser.
+
+---
+
+## How to use the dashboard
+
+1. Upload a video file (`.mpg`, `.mp4`, `.avi`) using the sidebar.
+2. Choose a zone layout mode:
+   - **Draw custom zones** - drag rectangles onto the first frame to mark shelves, walkway, billing, and exit.
+   - **Auto** - zones are generated automatically from the frame size.
+   - **CAVIAR config** - fixed zones for the 384×288 CAVIAR dataset.
+3. Optionally enable **Save annotated video** to write the output to `data/output/`.
+4. Press **▶ Run pipeline** to start processing.
+5. Watch the live feed, suspicion scores, heatmap, alerts, and SHAP explanations update in real time.
+6. After the run, upload a ground truth JSON file to see accuracy, F1, and the grid search results.
 
 ---
 
@@ -38,23 +62,53 @@ streamlit run src/dashboard/app.py
 
 ```
 src/
-  detection/   # YOLOv8 person detector
-  tracking/    # IoU-based multi-person tracker
-  behavior/    # Dwell time, revisit, trajectory feature extraction
-  zone_graph/  # Zone definitions and transition graph
-  alerts/      # Risk scoring and alert classification
-  dashboard/   # Streamlit UI (main entry point)
-shared/        # Core dataclasses
-configs/       # Store zone layout (YAML)
+  detection/        YOLOv8 person detector
+  tracking/         Kalman filter + appearance multi-person tracker
+  behavior/         Dwell time, revisit counting, trajectory analysis
+  zone_graph/       Zone definitions and transition graph
+  alerts/           Rule-based risk scoring and alert classification
+  explainability/   SHAP explanations for each person's risk score
+  evaluation/       Classification metrics and weight grid search
+  dashboard/        Streamlit dashboard (main entry point)
+shared/             Core dataclasses used across modules
+configs/            Store zone layout YAML files
 data/
-  raw/         # Input video files
-  output/      # Annotated video outputs
+  raw/              Input video files
+  output/           Annotated video outputs saved by the dashboard
+tests/              Unit tests, scenario simulations, and benchmarks
 ```
 
-## Usage
+---
 
-1. Launch the app (Docker or local).
-2. Upload a video file or select one from `data/raw/`.
-3. Draw store zones on the first frame using the canvas tool.
-4. Click **Run** to start analysis.
-5. View live annotated video, suspicion scores, heatmap, and alerts in the dashboard.
+## Alert levels
+
+| Level  | Meaning |
+|--------|---------|
+| NONE   | No suspicious behaviour detected |
+| LOW    | Small score with minor indicators |
+| MEDIUM | Long shelf dwell or moderately high score |
+| HIGH   | Billing bypass, repeated zone revisits, or very high score |
+
+---
+
+## Model
+
+The project uses **YOLOv8n** (`yolov8n.pt`) for person detection. The weight file is included in the repository root. No retraining is needed - the system runs inference only.
+
+---
+
+## Running the tests
+
+```bash
+python -m pytest tests/
+```
+
+To run the synthetic benchmark that evaluates 30 labelled scenarios:
+```bash
+python tests/synthetic_benchmark.py
+```
+
+To regenerate the confusion matrix from the ground truth videos:
+```bash
+python tests/plot_confusion_matrix.py
+```

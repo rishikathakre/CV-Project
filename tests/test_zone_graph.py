@@ -1,5 +1,3 @@
-"""Unit tests for src/zone_graph/graph.py"""
-
 import sys
 from pathlib import Path
 

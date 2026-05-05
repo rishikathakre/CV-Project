@@ -1,5 +1,3 @@
-"""Unit tests for src/zone_graph/zone_mapper.py"""
-
 import sys
 from pathlib import Path
 
@@ -15,52 +13,43 @@ def _mapper():
 
 
 def test_entrance_zone():
-    # Foot position at (192, 260) — inside entrance polygon [0,220]→[384,288]
     m = _mapper()
-    assert m.get_zone((172, 220, 40, 40)) == "entrance"   # foot=(192, 260)
+    assert m.get_zone((172, 220, 40, 40)) == "entrance"
 
 
 def test_walkway_zone():
-    # Foot at (192, 200) — inside walkway [0,150]→[384,220]
     m = _mapper()
-    assert m.get_zone((172, 160, 40, 40)) == "walkway"    # foot=(192, 200)
+    assert m.get_zone((172, 160, 40, 40)) == "walkway"
 
 
 def test_shelves_left_zone():
-    # Foot at (65, 120) — inside shelves_left [0,60]→[130,150]
     m = _mapper()
-    assert m.get_zone((45, 80, 40, 40)) == "shelves_left"  # foot=(65, 120)
+    assert m.get_zone((45, 80, 40, 40)) == "shelves_left"
 
 
 def test_shelves_center_zone():
-    # Foot at (195, 120) — inside shelves_center [130,60]→[260,150]
     m = _mapper()
     assert m.get_zone((175, 80, 40, 40)) == "shelves_center"
 
 
 def test_shelves_right_zone():
-    # Foot at (322, 120) — inside shelves_right [260,60]→[384,150]
     m = _mapper()
     assert m.get_zone((302, 80, 40, 40)) == "shelves_right"
 
 
 def test_billing_zone():
-    # Foot at (65, 40) — inside billing [0,0]→[130,60]
     m = _mapper()
-    assert m.get_zone((45, 0, 40, 40)) == "billing"        # foot=(65, 40)
+    assert m.get_zone((45, 0, 40, 40)) == "billing"
 
 
 def test_exit_zone():
-    # Foot at (322, 40) — inside exit [260,0]→[384,60]
     m = _mapper()
     assert m.get_zone((302, 0, 40, 40)) == "exit"
 
 
 def test_unknown_zone():
-    # Foot at (195, 55) — in the gap between shelves and billing/exit rows
     m = _mapper()
-    # Gap: x=130..260, y=0..60 (between billing and exit) — not covered by any polygon
-    assert m.get_zone((175, 20, 40, 20)) == "unknown"      # foot=(195, 40) — in billing/exit gap
+    assert m.get_zone((175, 20, 40, 20)) == "unknown"
 
 
 def test_zone_names_complete():

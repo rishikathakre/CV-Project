@@ -1,37 +1,21 @@
-"""
-Per-class classification metrics for the four alert levels.
-
-classification_report(y_true, y_pred) returns per-class precision/recall/F1
-and macro-averaged totals — the same format as sklearn.metrics.classification_report
-but without the sklearn dependency, and restricted to the four alert levels
-(NONE / LOW / MEDIUM / HIGH) used by this project.
-"""
-
 from __future__ import annotations
 
 from typing import Sequence
 
+# The four possible alert levels in severity order.
 ALERT_LEVELS = ["NONE", "LOW", "MEDIUM", "HIGH"]
 
 
-def classification_report(
-    y_true: Sequence[str],
-    y_pred: Sequence[str],
-) -> dict[str, dict]:
-    """
-    Compute per-class and macro-averaged precision, recall, and F1.
+def classification_report(y_true: Sequence[str], y_pred: Sequence[str]) -> dict[str, dict]:
+    """Compute precision, recall, F1, and support for each alert level.
 
-    Args:
-        y_true: Ground-truth alert levels per person.
-        y_pred: Predicted alert levels per person.
-
-    Returns:
-        Dict keyed by class name (and "macro avg").  Each value is:
-            {"precision": float, "recall": float, "f1": float, "support": int}
+    Returns a dict keyed by class name plus a 'macro avg' entry.
+    The macro average is computed only over classes that appear in y_true.
     """
     if len(y_true) != len(y_pred):
         raise ValueError("y_true and y_pred must have the same length.")
 
+    # Sort classes by severity so the report is always in the same order.
     classes = sorted(
         set(y_true) | set(y_pred),
         key=lambda c: ALERT_LEVELS.index(c) if c in ALERT_LEVELS else 99,
@@ -56,8 +40,7 @@ def classification_report(
             "support":   support,
         }
 
-    # Macro average — unweighted mean over classes that have at least one
-    # ground-truth sample (avoids inflating F1 with zero-support classes).
+    # Macro average only counts classes that actually appear in y_true.
     active = [v for v in report.values() if v["support"] > 0]
     if active:
         report["macro avg"] = {

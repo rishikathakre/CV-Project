@@ -1,18 +1,3 @@
-"""
-SHAP-based feature attribution for the linear risk scoring model.
-
-The scoring model is a linear combination:
-    S = ALPHA*f1 + BETA*f2 + GAMMA*f3 + DELTA*f4
-
-For linear models, SHAP values reduce analytically to:
-    phi_i = w_i * (x_i - E[x_i])     (contribution of feature i)
-    phi_0 = w · E[x]                   (population baseline)
-
-SHAPExplainer collects all observed feature vectors as the pipeline runs,
-then computes attributions for every tracked person relative to the
-population average (rather than an arbitrary fixed baseline).
-"""
-
 from __future__ import annotations
 
 import matplotlib
@@ -28,34 +13,32 @@ except ImportError:
 
 from src.behavior.scoring import ALPHA, BETA, GAMMA, DELTA
 
+# The model is a simple weighted sum, so the weights are the coefficients.
 _WEIGHTS = np.array([ALPHA, BETA, GAMMA, DELTA], dtype=float)
 FEATURE_NAMES = ["Dwell Anomaly", "Zone Revisits", "Path Irregularity", "Billing Bypass"]
 
-_COL_POS = "#ef4444"   # red  — feature pushes risk above baseline
-_COL_NEG = "#22c55e"   # green — feature pulls risk below baseline
-_COL_BASE = "#388bfd"  # blue  — baseline bar
+_COL_POS  = "#ef4444"  # red for features that push risk up
+_COL_NEG  = "#22c55e"  # green for features that push risk down
+_COL_BASE = "#388bfd"  # blue for the baseline
 
 
 class SHAPExplainer:
-    """
-    Collects (f1, f2, f3, f4) feature vectors as the pipeline runs and
-    computes SHAP attributions for every tracked person using the
-    observed population as the background distribution.
+    """Explains why each person got their risk score relative to the crowd average.
 
-    Usage:
-        explainer = SHAPExplainer()
-        # inside per-frame loop:
-        explainer.update(pid, breakdown["raw"])
-        # after processing:
-        explanations = explainer.explain_all()
+    SHAP (SHapley Additive exPlanations) tells us how much each feature
+    contributed to a person's score compared to the average score of everyone
+    in the scene. A positive value means that feature made their score higher.
+
+    Because our model is a linear weighted sum, the SHAP value for feature i
+    is simply: weight_i * (person_value_i - crowd_mean_i).
     """
 
     def __init__(self) -> None:
-        self._all_vectors: list[list[float]] = []
-        self._person_vectors: dict[int, list[float]] = {}
+        self._all_vectors: list[list[float]] = []       # every observation ever seen
+        self._person_vectors: dict[int, list[float]] = {}  # latest vector per person
 
     def update(self, pid: int, raw_features: list[float]) -> None:
-        """Register the latest normalized feature vector for a tracked person."""
+        """Add a new observation for one person."""
         self._all_vectors.append(list(raw_features))
         self._person_vectors[pid] = list(raw_features)
 
@@ -63,14 +46,9 @@ class SHAPExplainer:
         return len(self._all_vectors)
 
     def explain_all(self) -> dict[int, dict]:
-        """
-        Compute SHAP attributions for every tracked person.
+        """Compute SHAP values for every person using the full observation history as background.
 
-        Uses shap.LinearExplainer when the library is available; falls back to
-        the identical analytical formula (valid for any linear model).
-
-        Returns dict mapping pid -> explanation dict with keys:
-            shap_values, feature_values, base_value, feature_names, prediction
+        Returns an empty dict if fewer than 2 observations have been collected.
         """
         if len(self._all_vectors) < 2:
             return {}
@@ -82,18 +60,15 @@ class SHAPExplainer:
         results: dict[int, dict] = {}
 
         if _HAS_SHAP:
-            # Use the official SHAP library for correctness / auditability.
-            # (coef, intercept) tuple form accepted by LinearExplainer.
             explainer = _shap.LinearExplainer((_WEIGHTS, 0.0), bg)
 
         for pid, fvec in self._person_vectors.items():
             x = np.array(fvec, dtype=float)
-
             if _HAS_SHAP:
                 sv = explainer.shap_values(x.reshape(1, -1))[0]
                 ev = float(explainer.expected_value)
             else:
-                # Analytical formula: phi_i = w_i * (x_i - E[x_i])
+                # Fallback formula: phi_i = w_i * (x_i - mean_i)
                 sv = _WEIGHTS * (x - expected)
                 ev = base_value
 
@@ -108,36 +83,27 @@ class SHAPExplainer:
         return results
 
 
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
 def plot_waterfall(explanation: dict, pid: int) -> plt.Figure:
-    """
-    Horizontal waterfall chart showing per-feature SHAP contributions.
-
-    Red bars push the risk score above the population baseline;
-    green bars pull it below.
-    """
-    sv   = explanation["shap_values"]
-    fv   = explanation["feature_values"]
+    """Draw a horizontal bar chart showing each feature's contribution for one person."""
+    sv    = explanation["shap_values"]
+    fv    = explanation["feature_values"]
     names = explanation["feature_names"]
-    base = explanation["base_value"]
-    pred = explanation["prediction"]
+    base  = explanation["base_value"]
+    pred  = explanation["prediction"]
 
     fig, ax = plt.subplots(figsize=(7, 3.6))
     fig.patch.set_facecolor("#0d1117")
     ax.set_facecolor("#161b22")
 
-    colors = [_COL_POS if v >= 0 else _COL_NEG for v in sv]
+    colors   = [_COL_POS if v >= 0 else _COL_NEG for v in sv]
     y_labels = [f"{n}\n(={fv[i]:.2f})" for i, n in enumerate(names)]
 
     bars = ax.barh(y_labels, sv, color=colors, height=0.52, edgecolor="none")
     ax.axvline(0, color="#8b949e", linewidth=0.8, linestyle="--")
 
     for bar, val in zip(bars, sv):
-        pad = 0.003
-        ha = "left" if val >= 0 else "right"
+        pad   = 0.003
+        ha    = "left" if val >= 0 else "right"
         x_pos = (bar.get_x() + bar.get_width() + pad) if val >= 0 else (bar.get_x() - pad)
         ax.text(x_pos, bar.get_y() + bar.get_height() / 2,
                 f"{val:+.3f}", va="center", ha=ha, fontsize=8, color="#e6edf3")
@@ -151,24 +117,22 @@ def plot_waterfall(explanation: dict, pid: int) -> plt.Figure:
         spine.set_visible(False)
     ax.set_xlabel("SHAP value  (contribution to risk score vs. population average)",
                   color="#8b949e", fontsize=7.5)
-
-    # Annotate baseline
-    ax.axvline(base - base, color="none")   # ensure 0 is always visible
+    ax.axvline(base - base, color="none")
     plt.tight_layout(pad=0.8)
     return fig
 
 
 def plot_summary_bar(explanations: dict[int, dict]) -> plt.Figure:
-    """
-    Stacked bar chart: mean |SHAP| per feature across all tracked persons.
-    Gives an overall view of which features drive risk in this video.
+    """Draw a bar chart of mean absolute SHAP values across all tracked people.
+
+    This shows which feature drives risk the most in the current scene overall.
     """
     if not explanations:
         fig, ax = plt.subplots()
         ax.text(0.5, 0.5, "Not enough data", ha="center", va="center")
         return fig
 
-    all_sv = np.array([e["shap_values"] for e in explanations.values()])
+    all_sv   = np.array([e["shap_values"] for e in explanations.values()])
     mean_abs = np.abs(all_sv).mean(axis=0)
 
     fig, ax = plt.subplots(figsize=(6, 2.8))

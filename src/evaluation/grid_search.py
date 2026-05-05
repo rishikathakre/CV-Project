@@ -1,19 +1,3 @@
-"""
-Grid search over scoring weights (ALPHA, BETA, GAMMA, DELTA) to maximise macro-F1.
-
-The four weights must sum to 1.0 (the constraint enforced here).  With a step
-of 0.1 there are ~286 valid combinations — the search completes in well under
-a second for a typical clip of 1–5 tracked persons.
-
-Usage:
-    from src.evaluation.grid_search import run_grid_search
-
-    # person_features: {pid: (BehaviorFeatures, [f1, f2, f3, f4])}
-    # ground_truth:    {pid: "NONE"|"LOW"|"MEDIUM"|"HIGH"}
-    best, results = run_grid_search(person_features, ground_truth)
-    print(best)   # {'alpha': 0.4, 'beta': 0.3, 'gamma': 0.2, 'delta': 0.1, 'macro_f1': 0.78}
-"""
-
 from __future__ import annotations
 
 from itertools import product
@@ -26,19 +10,14 @@ from src.alerts.explainer import get_alert_level
 from src.evaluation.metrics import classification_report
 
 
-def _score_with_weights(
-    raw: Sequence[float],
-    alpha: float,
-    beta:  float,
-    gamma: float,
-    delta: float,
-) -> float:
+def _score_with_weights(raw: Sequence[float], alpha: float, beta: float, gamma: float, delta: float) -> float:
+    """Compute the suspicion score using a specific set of weights instead of the defaults."""
     f1, f2, f3, f4 = raw
     return float(np.clip(alpha * f1 + beta * f2 + gamma * f3 + delta * f4, 0.0, 1.0))
 
 
 def _predict_level(features: BehaviorFeatures, score: float) -> str:
-    """Derive alert level from rule triggers + the supplied score."""
+    """Inject a custom score into the features and return the alert level the rules produce."""
     tmp = BehaviorFeatures(
         id=features.id,
         dwell_per_zone=features.dwell_per_zone,
@@ -56,18 +35,12 @@ def run_grid_search(
     ground_truth: dict[int, str],
     step: float = 0.1,
 ) -> tuple[dict, list[dict]]:
-    """
-    Exhaustive grid search over (ALPHA, BETA, GAMMA, DELTA) with α+β+γ+δ=1.
+    """Try all weight combinations (alpha, beta, gamma, delta) that sum to 1.0.
 
-    Args:
-        person_features: {pid: (BehaviorFeatures, [f1, f2, f3, f4])}
-            where [f1..f4] are the final normalized feature values.
-        ground_truth: {pid: alert_level_string}
-        step: Grid resolution (default 0.1).  Use 0.2 for a faster run.
+    For each combination the alert levels are re-predicted and scored against
+    ground truth. Returns the best combination and all results sorted by F1.
 
-    Returns:
-        (best_weights, all_results_sorted_by_f1)
-        best_weights has keys: alpha, beta, gamma, delta, macro_f1
+    Step size of 0.1 gives 286 combinations.
     """
     pids = [pid for pid in person_features if pid in ground_truth]
     if not pids:
@@ -95,7 +68,6 @@ def run_grid_search(
 
         report = classification_report(y_true, y_pred)
         macro_f1 = report.get("macro avg", {}).get("f1", 0.0)
-
         results.append({"alpha": a, "beta": b, "gamma": g, "delta": d, "macro_f1": macro_f1})
 
         if macro_f1 > best_f1:

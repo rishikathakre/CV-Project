@@ -1,18 +1,3 @@
-"""
-Streamlit real-time retail risk dashboard.
-
-Upload a .mpg (or any OpenCV-readable) video via the sidebar.
-The full pipeline runs frame-by-frame and displays:
-  - Smooth annotated live feed (every frame, 2× upscaled)
-  - Score-based bounding box colors + semi-transparent fill
-  - Zone overlay with colored region polygons
-  - Per-person suspicion score table with risk indicators
-  - Active alerts panel with severity cards
-  - Gaussian-blurred foot-position heatmap
-  - Risk score timeline chart per person
-  - Metric cards: frame / tracked / alerts / peak risk
-"""
-
 import sys
 import tempfile
 import time
@@ -25,16 +10,12 @@ import streamlit as st
 
 try:
     from PIL import Image as _PILImage
-    # streamlit-drawable-canvas 0.9.3 calls st_image.image_to_url which was
-    # removed in Streamlit 1.25+.  Inject a shim before importing the component.
     import base64 as _b64, io as _io, streamlit.elements.image as _st_img
     if not hasattr(_st_img, "image_to_url"):
         def _image_to_url(image, width, clamp, channels, output_format, image_id,
                           allow_emoji=False):
             buf = _io.BytesIO()
             img = image if hasattr(image, "save") else _PILImage.fromarray(image)
-            # Use JPEG at quality 80 — much smaller payload than PNG, passes
-            # through Streamlit's component protocol without truncation.
             img = img.convert("RGB")
             img.save(buf, format="JPEG", quality=80)
             b64 = _b64.b64encode(buf.getvalue()).decode()
@@ -56,14 +37,10 @@ from src.tracking.tracker import PersonTracker
 from src.zone_graph.graph import ZoneTransitionGraph
 from src.zone_graph.zone_mapper import ZoneMapper
 
-# Phase 2 — XAI & Evaluation
 from src.explainability.shap_explainer import SHAPExplainer, plot_waterfall, plot_summary_bar
 from src.evaluation.metrics import classification_report
 from src.evaluation.grid_search import run_grid_search
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Retail Risk Monitor",
     page_icon="🛒",
@@ -72,9 +49,6 @@ st.set_page_config(
 
 CONFIG_PATH = str(PROJECT_ROOT / "configs" / "store_layout.yaml")
 
-# ---------------------------------------------------------------------------
-# Custom CSS — dark professional theme
-# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] { background-color: #0d1117; }
@@ -82,7 +56,6 @@ st.markdown("""
 [data-testid="stHeader"]           { background-color: #0d1117; }
 h1, h2, h3 { color: #e6edf3 !important; }
 
-/* ---- Metric cards ---- */
 .metric-row {
     display: flex;
     gap: 10px;
@@ -114,7 +87,6 @@ h1, h2, h3 { color: #e6edf3 !important; }
     line-height: 1.1;
 }
 
-/* ---- Alert cards ---- */
 .alert-card {
     background: #161b22;
     border-radius: 8px;
@@ -128,7 +100,6 @@ h1, h2, h3 { color: #e6edf3 !important; }
 .alert-title  { font-weight: 700; color: #e6edf3; margin-bottom: 4px; font-size: 0.9rem; }
 .alert-reason { color: #8b949e; font-size: 0.80rem; padding-left: 6px; line-height: 1.6; }
 
-/* ---- Section label ---- */
 .section-label {
     font-size: 0.72rem;
     font-weight: 600;
@@ -140,26 +111,20 @@ h1, h2, h3 { color: #e6edf3 !important; }
     border-bottom: 1px solid #21262d;
 }
 
-/* ---- No-alert placeholder ---- */
 .no-alert { color: #3fb950; font-size: 0.85rem; padding: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# Colour helpers
-# ---------------------------------------------------------------------------
 
 def _score_to_bgr(score: float):
-    """Green → amber → red based on suspicion score."""
     if score < 0.35:
-        return (45, 200, 55)     # green  (BGR)
+        return (45, 200, 55)
     elif score < 0.65:
-        return (0, 160, 255)     # orange (BGR)
+        return (0, 160, 255)
     else:
-        return (35, 35, 230)     # red    (BGR)
+        return (35, 35, 230)
 
 
-# Named-zone colours; any unknown zone name gets a colour from the palette.
 _ZONE_BGR = {
     "entrance":       (60,  200,  60),
     "walkway":        (200, 200,  60),
@@ -178,7 +143,6 @@ _PALETTE = [
 
 
 def _zone_colour(name: str, idx: int) -> tuple:
-    # Try substrings for common names
     for key, col in _ZONE_BGR.items():
         if key in name or name in key:
             return col
@@ -187,12 +151,8 @@ def _zone_colour(name: str, idx: int) -> tuple:
 
 _ALERT_ICON = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🔵", "NONE": "⚪"}
 
-# ---------------------------------------------------------------------------
-# Frame annotation
-# ---------------------------------------------------------------------------
 
 def _draw_zone_overlay(frame: np.ndarray, zone_mapper: ZoneMapper) -> None:
-    """In-place: semi-transparent zone fills, outlines, and short labels."""
     overlay = frame.copy()
     for idx, (zone_name, polygon) in enumerate(zone_mapper._zones.items()):
         pts = polygon.astype(np.int32).reshape((-1, 1, 2))
@@ -218,11 +178,6 @@ def _annotate_frame(
     zone_mapper: ZoneMapper | None,
     scale: int = 2,
 ) -> np.ndarray:
-    """
-    Draw zone overlay (optional), score-coloured boxes with semi-transparent
-    fill, solid-background labels, zone tags, and foot-position dots.
-    Returns an upscaled RGB image ready for st.image().
-    """
     out = frame.copy()
 
     if zone_mapper is not None:
@@ -233,16 +188,13 @@ def _annotate_frame(
         score = scores.get(person.id, 0.0)
         colour = _score_to_bgr(score)
 
-        # Semi-transparent fill
         fill_layer = out.copy()
         cv2.rectangle(fill_layer, (x, y), (x + w, y + h), colour, -1)
         cv2.addWeighted(fill_layer, 0.18, out, 0.82, 0, out)
 
-        # Box outline — thicker at high risk
         thickness = 3 if score >= 0.65 else 2
         cv2.rectangle(out, (x, y), (x + w, y + h), colour, thickness, cv2.LINE_AA)
 
-        # --- Top label: "ID 2  0.71" ---
         font = cv2.FONT_HERSHEY_SIMPLEX
         label = f"ID {person.id}  {score:.2f}"
         (lw, lh), _ = cv2.getTextSize(label, font, 0.45, 1)
@@ -252,7 +204,6 @@ def _annotate_frame(
         cv2.putText(out, label, (lx + 3, ly + lh + 2),
                     font, 0.45, (12, 12, 12), 1, cv2.LINE_AA)
 
-        # --- Bottom zone tag ---
         zone_label = person.zone or ""
         if zone_label and zone_label != "unknown":
             (zw, zh), _ = cv2.getTextSize(zone_label, font, 0.32, 1)
@@ -261,20 +212,14 @@ def _annotate_frame(
             cv2.putText(out, zone_label, (zx + 2, zy + zh + 2),
                         font, 0.32, (12, 12, 12), 1, cv2.LINE_AA)
 
-        # Foot-position dot (white ring + colour fill)
         fx, fy = int(x + w / 2), int(y + h)
         cv2.circle(out, (fx, fy), 5, colour, -1)
         cv2.circle(out, (fx, fy), 5, (240, 240, 240), 1, cv2.LINE_AA)
 
-    # Upscale for display
     h_out, w_out = out.shape[:2]
     out = cv2.resize(out, (w_out * scale, h_out * scale), interpolation=cv2.INTER_LINEAR)
     return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
 
-
-# ---------------------------------------------------------------------------
-# Heatmap
-# ---------------------------------------------------------------------------
 
 def _update_heatmap(heatmap: np.ndarray, tracked_persons) -> np.ndarray:
     for person in tracked_persons:
@@ -295,10 +240,6 @@ def _render_heatmap(heatmap: np.ndarray, scale: int = 2) -> np.ndarray:
     h, w = coloured.shape[:2]
     return cv2.resize(coloured, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
 
-
-# ---------------------------------------------------------------------------
-# HTML builders
-# ---------------------------------------------------------------------------
 
 def _metrics_html(frame_idx: int, n_persons: int, n_alerts: int, max_score: float) -> str:
     risk_class = "red" if max_score >= 0.65 else ("orange" if max_score >= 0.35 else "green")
@@ -331,27 +272,14 @@ def _alerts_html(alerts: list) -> str:
     for pid, level, reasons in alerts:
         icon = _ALERT_ICON.get(level, "⚪")
         html += f'<div class="alert-card {level}">'
-        html += f'<div class="alert-title">{icon} Person {pid} — {level}</div>'
+        html += f'<div class="alert-title">{icon} Person {pid} - {level}</div>'
         for r in reasons[:3]:
             html += f'<div class="alert-reason">• {r}</div>'
         html += "</div>"
     return html
 
 
-# ---------------------------------------------------------------------------
-# Interactive zone drawing UI  (canvas rectangle drawing)
-# ---------------------------------------------------------------------------
-
 def _zone_draw_ui(first_frame: np.ndarray) -> None:
-    """
-    Drawable canvas on the first frame.  User drags rectangles over store zones,
-    names each zone in the text boxes below, then clicks Confirm.
-    Confirmed zones → st.session_state["custom_zones"].
-
-    Background image is injected via initial_drawing["backgroundImage"] (fabric.js
-    JSON) instead of the background_image parameter, which calls the removed
-    Streamlit image_to_url API and causes a blank canvas.
-    """
     if not _HAS_CANVAS:
         st.error("streamlit-drawable-canvas not installed. Run: pip install streamlit-drawable-canvas")
         return
@@ -360,23 +288,16 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
 
     h, w = first_frame.shape[:2]
 
-    # Double small videos (CAVIAR 384 px) so they're usable; cap at 700 px
     canvas_w = min(700, w * 2) if w < 500 else min(700, w)
     canvas_scale = canvas_w / w
     canvas_h = int(h * canvas_scale)
 
-    # Encode resized frame as a compact JPEG data URL
     frame_rgb  = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
     frame_disp = cv2.resize(frame_rgb, (canvas_w, canvas_h), interpolation=cv2.INTER_LINEAR)
     buf = _iomod.BytesIO()
     _PILImage.fromarray(frame_disp).convert("RGB").save(buf, format="JPEG", quality=75)
     data_url = "data:image/jpeg;base64," + _b64mod.b64encode(buf.getvalue()).decode()
 
-    # Embed the frame as a non-interactive fabric.js backgroundImage.
-    # Using initial_drawing bypasses the broken image_to_url path in the
-    # background_image parameter.  The useEffect that loads initial_drawing
-    # only fires when the canvas element mounts (key change), so user-drawn
-    # rectangles survive Streamlit reruns.
     video_name = st.session_state.get("_video_name", "default")
     canvas_key = f"zone_canvas_{abs(hash(video_name)) % 10_000_000}"
 
@@ -416,7 +337,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         fill_color="rgba(255, 140, 0, 0.20)",
         stroke_width=2,
         stroke_color="#00ff88",
-        background_color="",       # backgroundImage handles it
+        background_color="",
         update_streamlit=True,
         height=canvas_h,
         width=canvas_w,
@@ -435,7 +356,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         return
 
     _ZONE_OPTIONS = [
-        "— select zone —",
+        "- select zone -",
         "billing",
         "exit",
         "shelves",
@@ -447,7 +368,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         "other (type below)",
     ]
 
-    st.markdown(f"**{len(shapes)} zone(s) drawn — name each one:**")
+    st.markdown(f"**{len(shapes)} zone(s) drawn - name each one:**")
     n_cols = min(len(shapes), 4)
     cols = st.columns(n_cols)
     zone_names = []
@@ -459,7 +380,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
                 custom = st.text_input("Custom name", key=f"zone_custom_{i}",
                                        placeholder="e.g. storage")
                 zone_names.append(custom.strip().lower())
-            elif choice == "— select zone —":
+            elif choice == "- select zone -":
                 zone_names.append("")
             else:
                 zone_names.append(choice)
@@ -486,9 +407,8 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         st.session_state["custom_zones"] = custom_zones
         video_name_save = st.session_state.get("_video_name", "")
         st.session_state["zones_video"]  = video_name_save
-        st.session_state.pop("_is_redrawing", None)   # done redrawing
+        st.session_state.pop("_is_redrawing", None)
 
-        # Persist to disk so the same video reloads its zones automatically
         if video_name_save:
             import yaml as _yaml
             stem = Path(video_name_save).stem
@@ -499,12 +419,7 @@ def _zone_draw_ui(first_frame: np.ndarray) -> None:
         st.rerun()
 
 
-# ---------------------------------------------------------------------------
-# Helpers for first-frame extraction
-# ---------------------------------------------------------------------------
-
 def _extract_first_frame(uploaded) -> tuple[np.ndarray | None, str]:
-    """Write uploaded file to a temp path, read one frame, return (frame, path)."""
     suffix = Path(uploaded.name).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded.read())
@@ -516,22 +431,16 @@ def _extract_first_frame(uploaded) -> tuple[np.ndarray | None, str]:
         if not ret:
             frame = None
     cap.release()
-    # Rewind the uploader so it can be read again later
     uploaded.seek(0)
     return frame, path
 
-
-# ---------------------------------------------------------------------------
-# Evaluation UI — extracted so it can be shown in both the pipeline path
-# and the pre-run (rerender) path via session-state cached features.
-# ---------------------------------------------------------------------------
 
 def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
     import json as _json
     import matplotlib.pyplot as _plt
 
     st.divider()
-    st.markdown('<div class="section-label">Model Training Results — Evaluation & Optimisation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Model Training Results - Evaluation & Optimisation</div>', unsafe_allow_html=True)
     st.caption(
         "Upload a ground truth JSON file (see `data/ground_truth_sample.json`) "
         "to compute accuracy, precision, recall, F1 and find optimal scoring weights. "
@@ -571,7 +480,6 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
     macro_prec = report.get("macro avg", {}).get("precision", 0.0)
     macro_rec  = report.get("macro avg", {}).get("recall",    0.0)
 
-    # ── Top metric cards ──────────────────────────────────────────────────────
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Accuracy",         f"{accuracy:.1%}")
     m2.metric("Macro F1",         f"{macro_f1:.3f}")
@@ -580,7 +488,6 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
 
     st.divider()
 
-    # ── Classification report + Confusion matrix ──────────────────────────────
     col_rep, col_cm = st.columns(2)
 
     with col_rep:
@@ -630,8 +537,7 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
 
     st.divider()
 
-    # ── Grid search + optimisation curve ─────────────────────────────────────
-    st.markdown("**Weight Grid Search** — optimises (α, β, γ, δ) to maximise macro-F1")
+    st.markdown("**Weight Grid Search** - optimises (α, β, γ, δ) to maximise macro-F1")
     st.caption("α = dwell anomaly  ·  β = zone revisits  ·  γ = path irregularity  ·  δ = billing bypass  ·  286 combinations, step = 0.1, α+β+γ+δ = 1")
 
     if st.button("▶  Run grid search", key="run_grid_search"):
@@ -639,7 +545,7 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
             best, all_results = run_grid_search(all_final_features, ground_truth, step=0.1)
 
         if not best:
-            st.warning("No results — check ID overlap.")
+            st.warning("No results - check ID overlap.")
             return
 
         st.success(
@@ -653,7 +559,6 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
             st.markdown("**Optimisation Curve**")
             st.caption("Each point = one weight combination. Running-max line shows the best F1 found so far as the search progresses.")
 
-            # Reverse so the curve goes worst → best (natural search convergence look)
             f1_vals = [r["macro_f1"] for r in reversed(all_results)]
             running_max, cur = [], 0.0
             for v in f1_vals:
@@ -675,14 +580,9 @@ def _show_evaluation(all_final_features: dict, video_stem: str) -> None:
             st.dataframe(top10, use_container_width=True, hide_index=True)
 
 
-# ---------------------------------------------------------------------------
-# Main dashboard
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     st.title("🛒 Retail Risk Monitor")
 
-    # ---- Sidebar ----
     with st.sidebar:
         st.markdown('<div class="section-label">Configuration</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
@@ -721,29 +621,29 @@ def main() -> None:
             ),
         )
         upscale = st.toggle("2× upscale display", value=True)
+        save_video = st.toggle("Save annotated video", value=False,
+                               help="Write the annotated output to data/output/ as an MP4 file.")
+        detect_every = st.slider(
+            "Process every N frames",
+            min_value=1, max_value=6, value=2, step=1,
+            help="1 = every frame (slowest). 2 = 2× faster. 3 = 3× faster. YOLO is skipped on intermediate frames; Kalman filter predicts positions instead.",
+        )
         st.divider()
         st.markdown('<div class="section-label">Calibration Status</div>', unsafe_allow_html=True)
         calib_ph = st.empty()
         st.divider()
         run_btn = st.button("▶  Run pipeline", type="primary", use_container_width=True)
 
-    # ------------------------------------------------------------------ #
-    # Nothing uploaded
-    # ------------------------------------------------------------------ #
     if not uploaded:
         st.info("Upload a video file in the sidebar and press **Run pipeline** to start.")
         return
 
-    # Track which video is loaded so we can invalidate saved zones if it changes
     st.session_state["_video_name"] = uploaded.name
     saved_zones_video = st.session_state.get("zones_video", "")
     if saved_zones_video and saved_zones_video != uploaded.name:
-        # Different video uploaded — clear old custom zones
         st.session_state.pop("custom_zones", None)
         st.session_state.pop("zones_video", None)
 
-    # Auto-load persisted zones for this video if none are in session yet.
-    # Skip while the user is actively redrawing (flag stays until Confirm is clicked).
     if zone_mode == "Draw custom zones" and not st.session_state.get("custom_zones") \
             and not st.session_state.get("_is_redrawing"):
         import yaml as _yaml
@@ -756,9 +656,6 @@ def main() -> None:
                 st.session_state["custom_zones"] = {n: np.array(v, dtype=np.float32) for n, v in _raw.items()}
                 st.session_state["zones_video"] = uploaded.name
 
-    # ------------------------------------------------------------------ #
-    # PRE-RUN PHASE  (Run button not pressed yet)
-    # ------------------------------------------------------------------ #
     if not run_btn:
         first_frame, _tmp_path = _extract_first_frame(uploaded)
 
@@ -769,20 +666,18 @@ def main() -> None:
         ph, pw = first_frame.shape[:2]
         scale_prev = 2 if upscale else 1
 
-        # ---- "Draw custom zones" mode ----
         if zone_mode == "Draw custom zones":
             confirmed = st.session_state.get("custom_zones")
             confirmed_video = st.session_state.get("zones_video", "")
 
             if confirmed and confirmed_video == uploaded.name:
-                # Already confirmed — show a preview with the custom zones drawn
                 zm_prev = ZoneMapper.from_dict(confirmed)
                 preview = first_frame.copy()
                 _draw_zone_overlay(preview, zm_prev)
                 preview = cv2.resize(
                     preview, (pw * scale_prev, ph * scale_prev), interpolation=cv2.INTER_LINEAR
                 )
-                st.markdown('<div class="section-label">Custom Zones — confirmed</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-label">Custom Zones - confirmed</div>', unsafe_allow_html=True)
                 st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
                 zone_list = ", ".join(f"`{z}`" for z in confirmed.keys())
                 st.success(f"Zones confirmed: {zone_list}")
@@ -796,17 +691,14 @@ def main() -> None:
                 with col_ok:
                     st.info("Press **▶ Run pipeline** in the sidebar to start.")
             else:
-                # Drawing phase
-                st.markdown('<div class="section-label">Draw Zones — first frame</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-label">Draw Zones - first frame</div>', unsafe_allow_html=True)
                 _zone_draw_ui(first_frame)
 
-            # Show evaluation panel if a previous pipeline run exists for this video
             _ev_features = st.session_state.get("_pipeline_features", {})
             if _ev_features and st.session_state.get("_pipeline_video") == uploaded.name:
                 _show_evaluation(_ev_features, Path(uploaded.name).stem)
             return
 
-        # ---- Other zone modes: static preview ----
         if zone_mode == "Auto (adapt to video)":
             zm_prev = ZoneMapper.from_frame(ph, pw)
         elif zone_mode == "CAVIAR config (384×288)":
@@ -820,25 +712,19 @@ def main() -> None:
         preview = cv2.resize(
             preview, (pw * scale_prev, ph * scale_prev), interpolation=cv2.INTER_LINEAR
         )
-        st.markdown('<div class="section-label">Zone Preview — first frame</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">Zone Preview - first frame</div>', unsafe_allow_html=True)
         st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
         if zm_prev is None:
-            st.info("Zones disabled — zone-based features will be skipped.")
+            st.info("Zones disabled - zone-based features will be skipped.")
         elif zone_mode == "CAVIAR config (384×288)" and (ph != 288 or pw != 384):
-            st.warning(f"Video is {pw}×{ph} but CAVIAR config expects 384×288 — zones will be misaligned. Switch to **Auto** or **Draw custom zones**.")
+            st.warning(f"Video is {pw}×{ph} but CAVIAR config expects 384×288 - zones will be misaligned. Switch to **Auto** or **Draw custom zones**.")
         st.info("Zones look correct? Press **▶ Run pipeline** in the sidebar to start.")
 
-        # Show evaluation panel if a previous pipeline run exists for this video
         _ev_features = st.session_state.get("_pipeline_features", {})
         if _ev_features and st.session_state.get("_pipeline_video") == uploaded.name:
             _show_evaluation(_ev_features, Path(uploaded.name).stem)
         return
 
-    # ------------------------------------------------------------------ #
-    # PIPELINE PHASE  (Run button pressed)
-    # ------------------------------------------------------------------ #
-
-    # For "Draw custom zones": require zones to be confirmed first
     if zone_mode == "Draw custom zones":
         confirmed = st.session_state.get("custom_zones")
         confirmed_video = st.session_state.get("zones_video", "")
@@ -846,7 +732,6 @@ def main() -> None:
             st.error("No zones confirmed yet. Please draw zones on the first frame first (Run button will activate after confirming).")
             return
 
-    # ---- Save upload to temp file ----
     suffix = Path(uploaded.name).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded.read())
@@ -863,7 +748,6 @@ def main() -> None:
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 384
     scale = 2 if upscale else 1
 
-    # ---- Zone mapper ----
     if zone_mode == "Draw custom zones":
         zone_mapper = ZoneMapper.from_dict(st.session_state["custom_zones"])
     elif zone_mode == "Auto (adapt to video)":
@@ -875,7 +759,6 @@ def main() -> None:
 
     show_zones = zone_mapper is not None
 
-    # ---- Pipeline components ----
     detector = PersonDetector(model_name="yolov8n.pt")
     detector._model.overrides["conf"] = conf_threshold
     tracker = PersonTracker(max_age=max_age, iou_threshold=iou_threshold)
@@ -883,12 +766,22 @@ def main() -> None:
     behavior_tracker = BehaviorTracker(fps=fps)
     adaptive_scorer = AdaptiveScorer()
 
-    # ---- Phase 2 components ----
     shap_explainer = SHAPExplainer()
-    # Final (pid -> (BehaviorFeatures, [f1,f2,f3,f4])) used by grid search
     all_final_features: dict[int, tuple] = {}
 
-    # ---- Layout ----
+    # Set up a video writer if the user wants to save annotated output.
+    writer = None
+    output_path = None
+    if save_video:
+        out_dir = PROJECT_ROOT / "data" / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(uploaded.name).stem
+        output_path = out_dir / f"{stem}_annotated.mp4"
+        out_w = frame_w * scale
+        out_h = frame_h * scale
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps / detect_every, (out_w, out_h))
+
     metrics_ph = st.empty()
 
     col_video, col_alerts = st.columns([3, 2])
@@ -913,18 +806,17 @@ def main() -> None:
     timeline_ph = st.empty()
 
     st.divider()
-    st.markdown('<div class="section-label">XAI — Live Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">XAI - Live Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
     st.caption("Which behavioural features are pushing each person's risk above or below the crowd average.")
     shap_live_ph = st.empty()
 
-    # ---- State ----
     heatmap_acc = np.zeros((frame_h, frame_w), dtype=np.float32)
     score_history: dict = {}
     frame_history: dict = {}
     score_breakdowns: dict = {}
     progress = st.progress(0, text="Processing…")
 
-    _PANEL_EVERY = 5
+    _PANEL_EVERY = detect_every * 4
 
     frame_idx = 0
     while frame_idx < max_frames:
@@ -932,7 +824,8 @@ def main() -> None:
         if not ret:
             break
 
-        detections = detector.detect(frame)
+        run_detect = (frame_idx % detect_every == 0)
+        detections = detector.detect(frame) if run_detect else []
         tracked_persons = tracker.update(detections, frame, frame_idx, fps)
 
         if show_zones:
@@ -942,7 +835,7 @@ def main() -> None:
         heatmap_acc = _update_heatmap(heatmap_acc, tracked_persons)
 
         current_scores: dict = {}
-        current_alert_levels: dict = {}   # pid -> true alert level (rule + score)
+        current_alert_levels: dict = {}
         current_alerts: list = []
 
         for person in tracked_persons:
@@ -965,22 +858,24 @@ def main() -> None:
             if level in ("MEDIUM", "HIGH"):
                 current_alerts.append((pid, level, features.alert_reasons))
 
-        # ---- Video: update every frame ----
-        annotated_rgb = _annotate_frame(
-            frame, tracked_persons, current_scores,
-            zone_mapper=zone_mapper if show_zones else None,
-            scale=scale,
-        )
-        video_ph.image(annotated_rgb, channels="RGB", use_container_width=True)
+        if run_detect:
+            annotated_rgb = _annotate_frame(
+                frame, tracked_persons, current_scores,
+                zone_mapper=zone_mapper if show_zones else None,
+                scale=scale,
+            )
+            video_ph.image(annotated_rgb, channels="RGB", use_container_width=True)
 
-        # ---- Metric cards: every frame ----
-        max_score = max(current_scores.values(), default=0.0)
-        metrics_ph.markdown(
-            _metrics_html(frame_idx, len(tracked_persons), len(current_alerts), max_score),
-            unsafe_allow_html=True,
-        )
+            # Write frame to file if video saving is on.
+            if writer is not None:
+                writer.write(cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR))
 
-        # ---- Slower panels ----
+            max_score = max(current_scores.values(), default=0.0)
+            metrics_ph.markdown(
+                _metrics_html(frame_idx, len(tracked_persons), len(current_alerts), max_score),
+                unsafe_allow_html=True,
+            )
+
         if frame_idx % _PANEL_EVERY == 0:
             alerts_ph.markdown(_alerts_html(current_alerts), unsafe_allow_html=True)
 
@@ -1023,7 +918,6 @@ def main() -> None:
                 })
                 timeline_ph.line_chart(timeline_df, height=180)
 
-            # ---- Live SHAP summary bar ----
             import matplotlib.pyplot as _plt
             live_exp = shap_explainer.explain_all()
             if live_exp:
@@ -1039,9 +933,11 @@ def main() -> None:
         frame_idx += 1
 
     cap.release()
+    if writer is not None:
+        writer.release()
+        st.success(f"Annotated video saved to `{output_path}`")
     progress.progress(100, text="Done.")
 
-    # ---- Final summary ----
     st.divider()
     st.markdown('<div class="section-label">Final Summary</div>', unsafe_allow_html=True)
     all_features = behavior_tracker.all_features()
@@ -1050,14 +946,13 @@ def main() -> None:
         for pid, feat in sorted(all_features.items()):
             feat, bd = adaptive_scorer.compute_final(feat)
             feat = generate_alert(feat)
-            # Refresh Phase 2 state with final (most accurate) values
             raw_final = bd.get("raw", all_final_features.get(pid, (None, [0.0, 0.0, 0.0, 0.0]))[1])
             all_final_features[pid] = (feat, raw_final)
             shap_explainer.update(pid, raw_final)
             level = get_alert_level(feat)
             rows.append({
                 "Person":           f"ID {pid}",
-                "Zones Visited":    ", ".join(dict.fromkeys(feat.zone_sequence)) or "—",
+                "Zones Visited":    ", ".join(dict.fromkeys(feat.zone_sequence)) or "-",
                 "Revisits":         sum(feat.zone_revisits.values()),
                 "Billing Bypassed": "✅ YES" if feat.billing_bypassed else "no",
                 "Score":            f"{feat.suspicion_score:.3f}",
@@ -1071,8 +966,6 @@ def main() -> None:
     else:
         st.info("No persons were tracked in the processed frames.")
 
-    # Cache pipeline results so the evaluation section survives rerenders
-    # (e.g. when the user uploads a ground truth file and Streamlit reruns).
     st.session_state["_pipeline_features"] = all_final_features
     st.session_state["_pipeline_video"]    = uploaded.name
 
@@ -1082,7 +975,7 @@ def main() -> None:
         st.markdown('<div class="section-label">Final Heatmap</div>', unsafe_allow_html=True)
         st.image(_render_heatmap(heatmap_acc, scale=scale), channels="RGB", use_container_width=True)
     with col_shap_sum:
-        st.markdown('<div class="section-label">XAI — Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">XAI - Risk Drivers (SHAP)</div>', unsafe_allow_html=True)
         import matplotlib.pyplot as _plt
         explanations = shap_explainer.explain_all()
         if explanations:
@@ -1093,10 +986,9 @@ def main() -> None:
         else:
             st.info("Need 2+ tracked persons to compute SHAP baseline.")
 
-    # ---- Per-person SHAP waterfall charts ----
     if explanations:
         st.divider()
-        st.markdown('<div class="section-label">XAI — Per-Person Attribution (SHAP Waterfall)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">XAI - Per-Person Attribution (SHAP Waterfall)</div>', unsafe_allow_html=True)
         st.caption("Red = feature pushed this person's risk ABOVE the crowd average. Green = below average. Base value = population mean risk.")
         n_cols = min(len(explanations), 3)
         wf_cols = st.columns(n_cols)
@@ -1106,9 +998,6 @@ def main() -> None:
                 st.pyplot(_fig_wf)
                 _plt.close(_fig_wf)
 
-    # ------------------------------------------------------------------ #
-    # PHASE 2 — Evaluation & Hyperparameter Tuning
-    # ------------------------------------------------------------------ #
     _show_evaluation(all_final_features, Path(uploaded.name).stem)
 
 

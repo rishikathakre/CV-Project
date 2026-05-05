@@ -1,4 +1,3 @@
-"""Patch the optimal-weights text box on slide 5 of the PPTX."""
 from pathlib import Path
 from pptx import Presentation
 from pptx.util import Pt
@@ -15,7 +14,7 @@ NEW_TEXT = (
 )
 
 prs  = Presentation(str(path))
-sl5  = prs.slides[4]   # slide 5 (0-indexed)
+sl5  = prs.slides[4]
 
 OLD_FRAGMENT = "Optimal Weights"
 patched = False
@@ -25,7 +24,6 @@ for shape in sl5.shapes:
     for para in shape.text_frame.paragraphs:
         full = "".join(r.text for r in para.runs)
         if OLD_FRAGMENT in full:
-            # Clear existing runs and write new text into the first run
             for run in para.runs:
                 run.text = ""
             if para.runs:
@@ -37,7 +35,7 @@ for shape in sl5.shapes:
             print(f"Patched text box: {full[:60]}...")
 
 if not patched:
-    print("WARNING: target text box not found — nothing changed.")
+    print("WARNING: target text box not found - nothing changed.")
 
 prs.save(str(path))
 print(f"Saved -> {path}")

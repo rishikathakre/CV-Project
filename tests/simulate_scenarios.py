@@ -1,13 +1,3 @@
-"""
-Scenario simulator -test the behavioral pipeline without any video or YOLO.
-
-Directly feeds zone trajectories into BehaviorTracker + AdaptiveScorer + explainer
-and prints a colour-coded summary of alert levels per scenario.
-
-Usage (from project root):
-    python tests/simulate_scenarios.py
-"""
-
 import sys
 from pathlib import Path
 
@@ -20,11 +10,8 @@ from src.alerts.explainer import generate_alert, get_alert_level
 from src.zone_graph.graph import ZoneTransitionGraph
 
 FPS = 25.0
-_D  = _ZONE_DEBOUNCE_FRAMES   # frames needed to commit a zone transition
+_D  = _ZONE_DEBOUNCE_FRAMES
 
-# ---------------------------------------------------------------------------
-# Colour codes (Windows CMD also supports ANSI if ENABLE_VIRTUAL_TERMINAL)
-# ---------------------------------------------------------------------------
 _RED    = "\033[91m"
 _YELLOW = "\033[93m"
 _CYAN   = "\033[96m"
@@ -39,17 +26,9 @@ _LEVEL_COLOR = {
     "NONE":   _GREEN,
 }
 
-
-# ---------------------------------------------------------------------------
-# Scenario definitions
-# ---------------------------------------------------------------------------
-# Each scenario is a list of (zone_name, seconds_in_zone) tuples.
-# The simulator converts seconds -> frame count and feeds each zone for that
-# many frames (so dwell time and debounce both work realistically).
-
 SCENARIOS = [
     {
-        "name": "Normal shopper -visits billing before leaving",
+        "name": "Normal shopper - visits billing before leaving",
         "path": [
             ("entrance",  3),
             ("walkway",   4),
@@ -59,7 +38,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Billing bypass -shelves -> exit, skips billing",
+        "name": "Billing bypass - shelves -> exit, skips billing",
         "path": [
             ("entrance",  3),
             ("walkway",   4),
@@ -68,7 +47,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Shelf loiterer -lingers at shelves 90+ seconds",
+        "name": "Shelf loiterer - lingers at shelves 90+ seconds",
         "path": [
             ("entrance",  3),
             ("shelves",  95),
@@ -77,7 +56,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Zone revisitor -re-enters shelves 3 times",
+        "name": "Zone revisitor - re-enters shelves 3 times",
         "path": [
             ("entrance",  3),
             ("shelves",  15),
@@ -89,7 +68,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Suspicious -multiple revisits + billing bypass",
+        "name": "Suspicious - multiple revisits + billing bypass",
         "path": [
             ("entrance",  3),
             ("shelves",  20),
@@ -101,7 +80,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Walk-through -just passing, no shelves",
+        "name": "Walk-through - just passing, no shelves",
         "path": [
             ("entrance",  2),
             ("walkway",  10),
@@ -109,7 +88,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Window shopper -brief shelf visit, leaves via billing",
+        "name": "Window shopper - brief shelf visit, leaves via billing",
         "path": [
             ("entrance",  3),
             ("walkway",   5),
@@ -120,7 +99,7 @@ SCENARIOS = [
         ],
     },
     {
-        "name": "Erratic movement -shelf bouncing back and forth",
+        "name": "Erratic movement - shelf bouncing back and forth",
         "path": [
             ("entrance",       3),
             ("shelves_left",   8),
@@ -134,22 +113,16 @@ SCENARIOS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Simulation helpers
-# ---------------------------------------------------------------------------
-
 def _make_person(pid: int, zone: str, frame: int) -> TrackedPerson:
-    return TrackedPerson(
-        id=pid, frame=frame, timestamp=frame / FPS,
-        bbox=(100, 100, 60, 160), zone=zone,
-    )
+    return TrackedPerson(id=pid, frame=frame, timestamp=frame / FPS,
+                         bbox=(100, 100, 60, 160), zone=zone)
 
 
 def _run_scenario(pid: int, path: list, tracker: BehaviorTracker,
                   graph: ZoneTransitionGraph, scorer: AdaptiveScorer) -> dict:
     frame = 0
     for zone, seconds in path:
-        n_frames = max(int(seconds * FPS), _D)   # at least debounce threshold
+        n_frames = max(int(seconds * FPS), _D)
         for _ in range(n_frames):
             person   = _make_person(pid, zone, frame)
             features = tracker.update(person, graph)
@@ -173,17 +146,11 @@ def _run_scenario(pid: int, path: list, tracker: BehaviorTracker,
     }
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     print(f"\n{'='*70}")
-    print(f"  {_BOLD}Retail Risk Monitor -Scenario Simulator{_RESET}")
+    print(f"  {_BOLD}Retail Risk Monitor - Scenario Simulator{_RESET}")
     print(f"{'='*70}\n")
 
-    # A shared AdaptiveScorer calibrates across all scenarios (simulates a
-    # multi-person session, which is realistic for a busy store).
     scorer  = AdaptiveScorer()
     graph   = ZoneTransitionGraph()
     tracker = BehaviorTracker(fps=FPS)
@@ -193,7 +160,6 @@ def main():
         r = _run_scenario(pid, scenario["path"], tracker, graph, scorer)
         results.append((scenario["name"], r))
 
-    # ---- Print summary table ----
     col_w = 52
     print(f"  {'Scenario':<{col_w}}  {'Alert':<8}  {'Score':>6}  {'Bypass':>8}  {'Revisits':>9}")
     print(f"  {'-'*col_w}  {'-'*8}  {'-'*6}  {'-'*8}  {'-'*9}")
@@ -209,7 +175,6 @@ def main():
             f"{r['revisits']:>9}"
         )
 
-    # ---- Detailed breakdown ----
     print(f"\n{'='*70}")
     print(f"  {_BOLD}Detailed breakdown{_RESET}")
     print(f"{'='*70}")
@@ -229,11 +194,10 @@ def main():
             f"bypass {bk.get('Billing bypass',0):+d}"
         )
         for reason in r["reasons"]:
-            print(f"      • {reason}")
+            print(f"      * {reason}")
 
     print(f"\n{'='*70}\n")
 
-    # ---- Calibration status ----
     th = scorer.current_thresholds()
     mode = "Adaptive" if th["adaptive"] else "Fixed fallback"
     print(f"  Scorer mode    : {mode}  (n={th['n']} persons)")

@@ -7,7 +7,7 @@
 
 zones:
   entrance:
-    # Bottom-centre strip — where people first enter the scene
+    # Bottom-centre strip - where people first enter the scene
     polygon:
       - [0,   220]
       - [384, 220]
@@ -47,7 +47,7 @@ zones:
       - [260, 150]
 
   billing:
-    # Checkout / billing counter — upper-left region
+    # Checkout / billing counter - upper-left region
     polygon:
       - [0,   0]
       - [130, 0]
@@ -55,7 +55,7 @@ zones:
       - [0,   60]
 
   exit:
-    # Upper-right corner — scene exit region
+    # Upper-right corner - scene exit region
     polygon:
       - [260, 0]
       - [384, 0]

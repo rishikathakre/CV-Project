@@ -1,5 +1,3 @@
-"""Unit tests for src/alerts/explainer.py"""
-
 import sys
 from pathlib import Path
 

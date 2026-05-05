@@ -1,30 +1,18 @@
-"""
-Natural-language alert generation.
-
-Translates a BehaviorFeatures snapshot into an alert level (LOW / MEDIUM / HIGH)
-and a list of plain-English reason strings that explain why the score is elevated.
-
-Alert level rules (applied in priority order — first match wins for level):
-  HIGH   : billing_bypassed is True
-  HIGH   : any zone has 2+ revisits
-  HIGH   : suspicion_score >= 0.7
-  MEDIUM : any shelf zone dwell > 30 seconds
-  MEDIUM : suspicion_score >= 0.4
-  LOW    : everything else (score > 0 but nothing specific triggered)
-  NONE   : suspicion_score == 0.0 and no flags
-"""
-
 from typing import List, Tuple
 
 from shared.data_types import BehaviorFeatures
 
-# Thresholds
+# Score thresholds for the three alert levels.
 _HIGH_SCORE_THRESHOLD   = 0.7
-_MEDIUM_SCORE_THRESHOLD = 0.45
-_SHELF_DWELL_MEDIUM_S   = 60.0   # seconds in a shelf zone before MEDIUM alert
-_HIGH_REVISIT_COUNT     = 2
-_LOW_MIN_THRESHOLD      = 0.05   # minimum score to promote NONE → LOW (dead-zone)
+_MEDIUM_SCORE_THRESHOLD = 0.5
 
+# How long someone must stay near a shelf before we raise a MEDIUM alert.
+_SHELF_DWELL_MEDIUM_S   = 60.0
+
+# Number of revisits to the same zone that triggers a HIGH alert.
+_HIGH_REVISIT_COUNT     = 2
+
+# These are the canonical shelf zone names used in the YAML config.
 _SHELF_ZONES_CANONICAL = {"shelves_left", "shelves_center", "shelves_right"}
 
 
@@ -33,18 +21,10 @@ def _is_shelf_zone(zone: str) -> bool:
 
 
 def generate_alert(features: BehaviorFeatures) -> BehaviorFeatures:
-    """
-    Compute alert level and reason strings; return a new BehaviorFeatures
-    instance with alert_reasons populated.
-
-    The caller is expected to have already run scoring.compute_score() so
-    that features.suspicion_score is set.
-    """
+    """Evaluate the features, pick an alert level, and return updated features with reasons."""
     level, reasons = _evaluate(features)
-
     if level != "NONE":
         reasons.insert(0, f"Alert level: {level}")
-
     return BehaviorFeatures(
         id=features.id,
         dwell_per_zone=features.dwell_per_zone,
@@ -58,29 +38,27 @@ def generate_alert(features: BehaviorFeatures) -> BehaviorFeatures:
 
 
 def get_alert_level(features: BehaviorFeatures) -> str:
-    """Return just the alert level string without building a new object."""
+    """Return only the alert level string without building the full alert."""
     level, _ = _evaluate(features)
     return level
 
 
-# ---------------------------------------------------------------------------
-# Internal logic
-# ---------------------------------------------------------------------------
-
 def _evaluate(features: BehaviorFeatures) -> Tuple[str, List[str]]:
-    """Return (level, reasons) without mutating features."""
+    """Apply all rules in priority order and return the level and list of reasons.
+
+    Rules are checked in this order: HIGH rules first, then MEDIUM, then LOW.
+    Once a HIGH is triggered no MEDIUM rules are checked.
+    """
     reasons: List[str] = []
     level = "NONE"
 
-    # --- HIGH triggers ---
+    # Rule 1: billing bypass is an immediate HIGH.
     if features.billing_bypassed:
         level = "HIGH"
         reasons.append("Left via exit without visiting the billing counter.")
 
-    high_revisit_zones = [
-        z for z, count in features.zone_revisits.items()
-        if count >= _HIGH_REVISIT_COUNT
-    ]
+    # Rule 2: coming back to the same zone multiple times is suspicious.
+    high_revisit_zones = [z for z, count in features.zone_revisits.items() if count >= _HIGH_REVISIT_COUNT]
     if high_revisit_zones:
         level = "HIGH"
         for z in high_revisit_zones:
@@ -89,6 +67,7 @@ def _evaluate(features: BehaviorFeatures) -> Tuple[str, List[str]]:
                 f"(threshold: {_HIGH_REVISIT_COUNT})."
             )
 
+    # Rule 3: a very high composite score also triggers HIGH.
     if features.suspicion_score >= _HIGH_SCORE_THRESHOLD:
         level = "HIGH"
         reasons.append(
@@ -96,38 +75,33 @@ def _evaluate(features: BehaviorFeatures) -> Tuple[str, List[str]]:
             f"exceeds high threshold ({_HIGH_SCORE_THRESHOLD})."
         )
 
-    # --- MEDIUM triggers (only if not already HIGH) ---
+    # MEDIUM rules only apply if no HIGH was triggered.
     if level != "HIGH":
+        # Rule 4: lingering near shelves for too long.
         shelf_dwell_flags = [
-            (z, t)
-            for z, t in features.dwell_per_zone.items()
+            (z, t) for z, t in features.dwell_per_zone.items()
             if _is_shelf_zone(z) and t > _SHELF_DWELL_MEDIUM_S
         ]
         if shelf_dwell_flags:
             level = "MEDIUM"
             for z, t in shelf_dwell_flags:
-                reasons.append(
-                    f"Spent {t:.1f}s in '{z}' "
-                    f"(threshold: {_SHELF_DWELL_MEDIUM_S:.0f}s)."
-                )
+                reasons.append(f"Spent {t:.1f}s in '{z}' (threshold: {_SHELF_DWELL_MEDIUM_S:.0f}s).")
 
+        # Rule 5: medium composite score.
         if features.suspicion_score >= _MEDIUM_SCORE_THRESHOLD:
-            if level != "MEDIUM":   # don't duplicate if shelf dwell already set it
+            if level != "MEDIUM":
                 level = "MEDIUM"
             reasons.append(
                 f"Overall suspicion score {features.suspicion_score:.2f} "
                 f"exceeds medium threshold ({_MEDIUM_SCORE_THRESHOLD})."
             )
 
-    # --- LOW catch-all ---
-    if level == "NONE" and features.suspicion_score >= _LOW_MIN_THRESHOLD:
+    # Any non-zero score that hasn't triggered a higher alert gets LOW.
+    if level == "NONE" and features.suspicion_score > 0.0:
         level = "LOW"
-        reasons.append(
-            f"Minor suspicious indicators detected "
-            f"(score: {features.suspicion_score:.2f})."
-        )
+        reasons.append(f"Minor suspicious indicators detected (score: {features.suspicion_score:.2f}).")
 
-    # --- Supplementary context reasons (all levels) ---
+    # Extra context added to any alert that shows irregular movement.
     if features.trajectory_irregularity > 0.3:
         reasons.append(
             f"Irregular movement pattern between shelf zones "

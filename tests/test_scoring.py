@@ -1,5 +1,3 @@
-"""Unit tests for src/behavior/scoring.py"""
-
 import sys
 from pathlib import Path
 
@@ -66,7 +64,6 @@ def test_trajectory_irregularity_scales():
 
 
 def test_score_clamped_to_one():
-    # All components at maximum → raw = α+β+γ+δ = 1.0 exactly; ensure no overflow.
     feat = _feat(
         dwell_per_zone={"shelves_left": _DWELL_ANOMALY_THRESHOLD_S},
         zone_revisits={"x": _REVISIT_SATURATION},
@@ -78,7 +75,7 @@ def test_score_clamped_to_one():
 
 
 def test_score_never_negative():
-    feat = _feat(trajectory_irregularity=-0.5)   # bad input
+    feat = _feat(trajectory_irregularity=-0.5)
     result = compute_score(feat)
     assert result.suspicion_score >= 0.0
 
